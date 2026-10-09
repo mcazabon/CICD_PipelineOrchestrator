@@ -1,19 +1,64 @@
 ﻿@inherits LayoutComponentBase
+@implements IDisposable
+@inject CICD_PipelineOrchestrator.Services.PipelineService PipelineService
+@inject CICD_PipelineOrchestrator.Services.RepositoryCatalogService RepositoryCatalogService
 
 <div class="page">
-    <div class="sidebar">
+    <aside class="sidebar">
         <NavMenu />
-    </div>
+    </aside>
 
-    <main>
-        <div class="top-row px-4">
-            <a href="https://learn.microsoft.com/aspnet/core/" target="_blank">About</a>
-        </div>
+    <div class="main-panel">
+        <header class="topbar">
+            <div class="topbar-title">
+                <span class="dashboard-pill">Enterprise</span>
+                <h2>CI/CD Operations</h2>
+            </div>
 
-        <article class="content px-4">
+            <div class="topbar-actions">
+                <span class="status-chip">Live</span>
+                <a class="topbar-link" href="/repositories">Repositories</a>
+            </div>
+        </header>
+
+        <section class="metrics-strip" aria-label="System metrics overview">
+            <div class="metric-card repos-card">
+                <div class="metric-icon">R</div>
+                <div class="metric-body">
+                    <span class="metric-label">Repos</span>
+                    <strong>@RepositoriesCount</strong>
+                </div>
+            </div>
+
+            <div class="metric-card pipelines-card">
+                <div class="metric-icon">P</div>
+                <div class="metric-body">
+                    <span class="metric-label">Pipelines</span>
+                    <strong>@PipelinesCount</strong>
+                </div>
+            </div>
+
+            <div class="metric-card approvals-card">
+                <div class="metric-icon">A</div>
+                <div class="metric-body">
+                    <span class="metric-label">Approvals</span>
+                    <strong>@ApprovalCount</strong>
+                </div>
+            </div>
+
+            <div class="metric-card incidents-card">
+                <div class="metric-icon">I</div>
+                <div class="metric-body">
+                    <span class="metric-label">Incidents</span>
+                    <strong>@IncidentCount</strong>
+                </div>
+            </div>
+        </section>
+
+        <main class="content">
             @Body
-        </article>
-    </main>
+        </main>
+    </div>
 </div>
 
 <div id="blazor-error-ui">
@@ -21,3 +66,26 @@
     <a href="" class="reload">Reload</a>
     <a class="dismiss">🗙</a>
 </div>
+
+@code {
+    protected override void OnInitialized()
+    {
+        PipelineService.Changed += OnPipelineStateChanged;
+        PipelineService.ReloadFromDatabase();
+    }
+
+    private void OnPipelineStateChanged()
+    {
+        _ = InvokeAsync(StateHasChanged);
+    }
+
+    public void Dispose()
+    {
+        PipelineService.Changed -= OnPipelineStateChanged;
+    }
+
+    private int RepositoriesCount => RepositoryCatalogService.GetConfiguredRepositoryCount();
+    private int PipelinesCount => PipelineService.GetPipelines().Count;
+    private int ApprovalCount => PipelineService.GetPipelines().Count(p => p.Status == CICD_PipelineOrchestrator.Models.PipelineStatus.Warning || p.Status == CICD_PipelineOrchestrator.Models.PipelineStatus.Running);
+    private int IncidentCount => PipelineService.GetRecentActivity().Count(a => a.Tone == "danger" || a.Tone == "warning");
+}

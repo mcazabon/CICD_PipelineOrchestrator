@@ -1,7 +1,9 @@
 @page "/pipelines"
 @rendermode InteractiveServer
+@implements IDisposable
 @inject PipelineService PipelineService
 @inject RepositoryCatalogService RepositoryCatalogService
+@inject IJSRuntime JS
 
 <PageTitle>Pipelines</PageTitle>
 
@@ -15,7 +17,7 @@
                 <div class="form-row">
                     <div class="form-field">
                         <label for="repo">Repository</label>
-                        <InputSelect id="repo" @bind-Value="request.RepositoryId">
+                        <InputSelect id="repo" @bind-Value="request.RepositoryId" @bind-Value:after="UpdateGeneratedPreview">
                             @foreach (var repo in repositories)
                             {
                                 <option value="@repo.Id">@repo.Name</option>
@@ -24,7 +26,7 @@
                     </div>
                     <div class="form-field">
                         <label for="environment">Target environment</label>
-                        <InputSelect id="environment" @bind-Value="request.Environment">
+                        <InputSelect id="environment" @bind-Value="request.Environment" @bind-Value:after="UpdateGeneratedPreview">
                             <option value="DEV">DEV</option>
                             <option value="UAT">UAT</option>
                             <option value="PROD">PROD</option>
@@ -49,7 +51,7 @@
                     </div>
                     <div class="form-field">
                         <label for="template">Template</label>
-                        <InputSelect id="template" @bind-Value="request.SelectedTemplate">
+                        <InputSelect id="template" @bind-Value="request.SelectedTemplate" @bind-Value:after="UpdateGeneratedPreview">
                             @foreach (var template in templates)
                             {
                                 <option value="@template.Id">@template.Name</option>
@@ -58,7 +60,7 @@
                     </div>
                 </div>
 
-                <button type="submit" class="btn btn-primary">Generate workflow</button>
+                <button type="submit" class="btn btn-primary" disabled="@(!repositories.Any())">Generate workflow</button>
             </EditForm>
         </section>
 
@@ -78,8 +80,80 @@
 
     <div class="pipeline-table">
         <div class="pipeline-card">
-            <h3>Generated YAML preview</h3>
-            <pre class="small-text" style="white-space: pre-wrap; background: rgba(15,23,42,0.5); padding: 1rem; border-radius: 12px; border: 1px solid rgba(148,163,184,0.15);">@generatedYaml</pre>
+            <h3>Workflow YAML editor</h3>
+            <p class="small-text">Edit YAML directly, then run diagnostics before using it.</p>
+            <textarea class="yaml-editor" @bind="editableYaml" @bind:event="oninput"></textarea>
+            <div class="repo-card-actions" style="margin-top: 0.75rem; justify-content: flex-start;">
+                <button class="btn btn-outline" type="button" @onclick="RunYamlDiagnostics">Test YAML</button>
+                <button class="btn btn-outline" type="button" @onclick="CopyEditorYaml">Copy YAML</button>
+                <button class="btn btn-secondary" type="button" @onclick="ResetYamlEditor">Reset to generated</button>
+                <button class="btn btn-primary" type="button" @onclick="DeployYamlToRepository" disabled="@(!CanDeployYaml)">
+                    @if (deployInProgress)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="margin-right: 0.5rem; vertical-align: middle;"></span>
+                    }
+                    <span>Deploy YAML</span>
+                </button>
+            </div>
+
+            @if (!string.IsNullOrWhiteSpace(deployStatusMessage))
+            {
+                <div class="small-text" style="margin-top: 0.55rem; padding: 0.6rem 0.8rem; border-radius: 10px; border: 1px solid @(deployStatusIsError ? "rgba(248,113,113,0.45)" : "rgba(74,222,128,0.45)"); background: @(deployStatusIsError ? "rgba(127,29,29,0.35)" : "rgba(20,83,45,0.35)"); color: @(deployStatusIsError ? "#fecaca" : "#dcfce7");">
+                    @deployStatusMessage
+                </div>
+            }
+
+            @if (deployLogs.Count > 0)
+            {
+                <div class="analysis-console" role="status" aria-live="polite" style="margin-top: 0.65rem;">
+                    <div class="analysis-console-header">Deployment console</div>
+                    <pre>@string.Join("\n", deployLogs)</pre>
+                </div>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(deployedYamlPreview))
+            {
+                <div class="yaml-diagnostics">
+                    <h4>Deployed workflow preview</h4>
+                    <div class="small-text">@deployedRepositoryName · @deployedWorkflowPath · @deployedBranch</div>
+                    <div class="repo-card-actions" style="margin-top: 0.5rem; justify-content: flex-start;">
+                        <button class="btn btn-outline" type="button" @onclick="CopyViewedYaml">Copy YAML</button>
+                        <button class="btn btn-secondary" type="button" @onclick="LoadViewedYamlIntoEditor">Use in editor</button>
+                    </div>
+                    <pre class="small-text" style="margin-top:0.5rem; white-space: pre-wrap; background: rgba(2,6,23,0.65); border: 1px solid rgba(148,163,184,0.24); border-radius: 10px; padding: 0.65rem;">@deployedYamlPreview</pre>
+                </div>
+            }
+
+            @if (yamlDiagnostics.Count > 0)
+            {
+                <div class="yaml-diagnostics">
+                    <h4>Diagnostics</h4>
+                    @foreach (var issue in yamlDiagnostics)
+                    {
+                        <div class="diag-item @GetDiagnosticClass(issue.Severity)">
+                            <strong>@issue.Severity</strong> · @issue.Message
+                            <div class="small-text">@issue.Detail</div>
+                            @if (!string.IsNullOrWhiteSpace(issue.Recommendation))
+                            {
+                                <div class="small-text" style="margin-top:0.35rem;"><strong>Recommendation:</strong> @issue.Recommendation</div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(issue.SuggestedTemplateId))
+                            {
+                                <button class="btn btn-outline" style="margin-top:0.45rem;" type="button" @onclick="() => ApplySuggestedTemplate(issue.SuggestedTemplateId)">
+                                    Apply template @issue.SuggestedTemplateId
+                                </button>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(issue.SuggestedYamlSnippet))
+                            {
+                                <pre class="small-text" style="margin-top:0.5rem; white-space: pre-wrap; background: rgba(2,6,23,0.65); border: 1px solid rgba(148,163,184,0.24); border-radius: 10px; padding: 0.65rem;">@issue.SuggestedYamlSnippet</pre>
+                                <button class="btn btn-outline" style="margin-top:0.45rem;" type="button" @onclick="() => ApplyYamlSnippet(issue.SuggestedYamlSnippet)">
+                                    Apply YAML fix
+                                </button>
+                            }
+                        </div>
+                    }
+                </div>
+            }
         </div>
 
         @foreach (var pipeline in pipelines)
@@ -100,6 +174,11 @@
                     <span class="small-text">Trigger: @pipeline.Trigger</span>
                     <span class="small-text">·</span>
                     <span class="small-text">Last run: @pipeline.LastRun.ToLocalTime().ToString("g")</span>
+                    @if (!string.IsNullOrWhiteSpace(pipeline.ExternalPipelineUrl))
+                    {
+                        <span class="small-text">·</span>
+                        <a class="small-text" href="@pipeline.ExternalPipelineUrl" target="_blank" rel="noreferrer">Open GitLab run</a>
+                    }
                 </div>
 
                 <div class="stage-list">
@@ -113,9 +192,25 @@
                     }
                 </div>
 
+                @if (pipeline.ConsoleOutput.Count > 0)
+                {
+                    <div class="analysis-console" role="status" aria-live="polite">
+                        <div class="analysis-console-header">Run console</div>
+                        <pre>@string.Join("\n", pipeline.ConsoleOutput)</pre>
+                    </div>
+                }
+
                 <div class="pipeline-actions">
                     <span class="small-text">Success rate: @pipeline.SuccessRate%</span>
-                    <button class="btn btn-outline" @onclick="() => TogglePipeline(pipeline.Id)">@(pipeline.Status == PipelineStatus.Running ? "Pause" : "Run")</button>
+                    <button class="btn btn-outline" @onclick="() => ViewPipelineYaml(pipeline)">View YAML</button>
+                    @if (pipeline.Status == PipelineStatus.Running)
+                    {
+                        <button class="btn btn-secondary" @onclick="() => CancelPipeline(pipeline.Id)">Cancel</button>
+                    }
+                    else
+                    {
+                        <button class="btn btn-outline" @onclick="() => StartPipeline(pipeline.Id)">Run</button>
+                    }
                 </div>
             </article>
         }
@@ -129,15 +224,28 @@
     private IReadOnlyList<RepositoryDefinition> repositories = [];
     private IReadOnlyList<PipelineTemplateDefinition> templates = [];
     private string generatedYaml = string.Empty;
+    private string editableYaml = string.Empty;
+    private List<WorkflowDiagnosticIssue> yamlDiagnostics = [];
+    private readonly List<string> deployLogs = [];
+    private bool diagnosticsExecuted;
+    private bool deployInProgress;
+    private string deployStatusMessage = string.Empty;
+    private bool deployStatusIsError;
+    private string deployedYamlPreview = string.Empty;
+    private string deployedWorkflowPath = string.Empty;
+    private string deployedRepositoryName = string.Empty;
+    private string deployedBranch = string.Empty;
 
     protected override void OnInitialized()
     {
-        repositories = RepositoryCatalogService.GetRepositories();
+        PipelineService.Changed += OnPipelineStateChanged;
+        PipelineService.ReloadFromDatabase();
+        repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
         templates = RepositoryCatalogService.GetTemplateCatalog();
-        request.RepositoryId = repositories.First().Id;
-        request.SelectedTemplate = templates.First().Id;
+        request.RepositoryId = repositories.FirstOrDefault()?.Id ?? string.Empty;
+        request.SelectedTemplate = templates.FirstOrDefault()?.Id ?? string.Empty;
         Refresh();
-        generatedYaml = RepositoryCatalogService.GeneratePreview(repositories.First());
+        UpdateGeneratedPreview();
     }
 
     private void Refresh()
@@ -146,23 +254,339 @@
         summary = PipelineService.GetSummary();
     }
 
-    private void TogglePipeline(int pipelineId)
+    private async Task StartPipeline(int pipelineId)
     {
-        PipelineService.TogglePipelineStatus(pipelineId);
+        await PipelineService.StartPipelineRunAsync(pipelineId);
         Refresh();
+    }
+
+    private async Task CancelPipeline(int pipelineId)
+    {
+        await PipelineService.CancelPipelineRunAsync(pipelineId);
+        Refresh();
+    }
+
+    private void ViewPipelineYaml(PipelineDefinition pipeline)
+    {
+        var storedYaml = RepositoryCatalogService.GetLatestWorkflowYamlForPipeline(pipeline.RepositoryId, pipeline.Name, pipeline.Project);
+        if (storedYaml is null)
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = $"No deployed YAML was found for {pipeline.Name}. Deploy the workflow first.";
+            return;
+        }
+
+        editableYaml = storedYaml.Value.Yaml;
+        generatedYaml = storedYaml.Value.Yaml;
+        deployedYamlPreview = storedYaml.Value.Yaml;
+        deployedWorkflowPath = storedYaml.Value.WorkflowPath;
+        deployedRepositoryName = storedYaml.Value.RepositoryName;
+        deployedBranch = storedYaml.Value.Branch;
+        deployStatusIsError = false;
+        deployStatusMessage = $"Loaded deployed YAML for {storedYaml.Value.RepositoryName} from {storedYaml.Value.DeployedUtc.ToLocalTime():g}.";
+        yamlDiagnostics.Clear();
+        diagnosticsExecuted = false;
+
+        if (!string.IsNullOrWhiteSpace(pipeline.RepositoryId))
+        {
+            request.RepositoryId = pipeline.RepositoryId;
+        }
+    }
+
+    private void LoadViewedYamlIntoEditor()
+    {
+        if (string.IsNullOrWhiteSpace(deployedYamlPreview))
+        {
+            return;
+        }
+
+        editableYaml = deployedYamlPreview;
+        generatedYaml = deployedYamlPreview;
+        deployStatusIsError = false;
+        deployStatusMessage = $"Loaded viewed YAML into the editor for {deployedRepositoryName}.";
+    }
+
+    private Task CopyEditorYaml()
+    {
+        return CopyYamlToClipboard(editableYaml, "Editor YAML");
+    }
+
+    private Task CopyViewedYaml()
+    {
+        return CopyYamlToClipboard(deployedYamlPreview, "Viewed YAML");
+    }
+
+    private async Task CopyYamlToClipboard(string yaml, string sourceLabel)
+    {
+        if (string.IsNullOrWhiteSpace(yaml))
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = $"{sourceLabel} is empty.";
+            return;
+        }
+
+        await JS.InvokeVoidAsync("navigator.clipboard.writeText", yaml);
+        deployStatusIsError = false;
+        deployStatusMessage = $"{sourceLabel} copied to clipboard.";
     }
 
     private void CreatePipeline()
     {
-        var repo = RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
-        if (repo is not null)
+        if (string.IsNullOrWhiteSpace(request.RepositoryId))
         {
-            generatedYaml = RepositoryCatalogService.GeneratePreview(repo);
+            generatedYaml = "No repository selected. Add or analyze a repository to generate workflow YAML.";
+            editableYaml = generatedYaml;
+            diagnosticsExecuted = false;
+            deployStatusMessage = string.Empty;
+            deployStatusIsError = false;
+            deployLogs.Clear();
+            deployedYamlPreview = string.Empty;
+            deployedWorkflowPath = string.Empty;
+            deployedRepositoryName = string.Empty;
+            deployedBranch = string.Empty;
+            return;
         }
 
-        PipelineService.AddPipeline(repo.Name, repo.Owner, repo.DefaultBranch, request.Environment);
+        var repo = RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
+        generatedYaml = RepositoryCatalogService.GeneratePreview(repo, request.SelectedTemplate, request.Environment);
+        editableYaml = generatedYaml;
+        diagnosticsExecuted = false;
+        deployStatusMessage = string.Empty;
+        deployStatusIsError = false;
+        deployLogs.Clear();
+        deployedYamlPreview = string.Empty;
+        deployedWorkflowPath = string.Empty;
+        deployedRepositoryName = string.Empty;
+        deployedBranch = string.Empty;
+        PipelineService.AddPipeline(repo.Id, repo.Name, repo.Owner, repo.DefaultBranch, request.Environment);
         Refresh();
     }
+
+    private bool CanDeployYaml =>
+        !deployInProgress
+        && diagnosticsExecuted
+        && !string.IsNullOrWhiteSpace(request.RepositoryId)
+        && yamlDiagnostics.All(i => i.Severity != WorkflowDiagnosticSeverity.Error);
+
+    private void UpdateGeneratedPreview()
+    {
+        if (string.IsNullOrWhiteSpace(request.RepositoryId))
+        {
+            generatedYaml = "No repository selected. Add or analyze a repository to generate workflow YAML.";
+            editableYaml = generatedYaml;
+            yamlDiagnostics.Clear();
+            diagnosticsExecuted = false;
+            deployStatusMessage = string.Empty;
+            deployStatusIsError = false;
+            deployLogs.Clear();
+            deployedYamlPreview = string.Empty;
+            deployedWorkflowPath = string.Empty;
+            deployedRepositoryName = string.Empty;
+            deployedBranch = string.Empty;
+            return;
+        }
+
+        var repo = repositories.FirstOrDefault(r => r.Id == request.RepositoryId)
+            ?? RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
+
+        generatedYaml = RepositoryCatalogService.GeneratePreview(repo, request.SelectedTemplate, request.Environment);
+        editableYaml = generatedYaml;
+        yamlDiagnostics.Clear();
+        diagnosticsExecuted = false;
+        deployStatusMessage = string.Empty;
+        deployStatusIsError = false;
+        deployLogs.Clear();
+    }
+
+    private void ResetYamlEditor()
+    {
+        editableYaml = generatedYaml;
+        yamlDiagnostics.Clear();
+        diagnosticsExecuted = false;
+        deployStatusMessage = string.Empty;
+        deployStatusIsError = false;
+        deployLogs.Clear();
+        deployedYamlPreview = string.Empty;
+        deployedWorkflowPath = string.Empty;
+        deployedRepositoryName = string.Empty;
+        deployedBranch = string.Empty;
+    }
+
+    private void RunYamlDiagnostics()
+    {
+        if (string.IsNullOrWhiteSpace(request.RepositoryId))
+        {
+            yamlDiagnostics =
+            [
+                new WorkflowDiagnosticIssue
+                {
+                    Severity = WorkflowDiagnosticSeverity.Error,
+                    Message = "Repository selection is required.",
+                    Detail = "Select a repository before running workflow diagnostics."
+                }
+            ];
+            return;
+        }
+
+        var repo = repositories.FirstOrDefault(r => r.Id == request.RepositoryId)
+            ?? RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
+
+        yamlDiagnostics = RepositoryCatalogService
+            .DiagnoseWorkflowYaml(editableYaml, repo.Provider, request.SelectedTemplate)
+            .ToList();
+        diagnosticsExecuted = true;
+        deployStatusMessage = string.Empty;
+        deployStatusIsError = false;
+    }
+
+    private async Task DeployYamlToRepository()
+    {
+        if (!CanDeployYaml)
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = "Run Test YAML and resolve blocking errors before deployment.";
+            return;
+        }
+
+        deployInProgress = true;
+        deployLogs.Clear();
+        deployStatusMessage = string.Empty;
+        deployStatusIsError = false;
+        deployLogs.Add($"[{DateTime.Now:HH:mm:ss}] Starting workflow deployment...");
+
+        var progress = new Progress<string>(message =>
+        {
+            deployLogs.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            var selectedRepository = repositories.FirstOrDefault(r => r.Id == request.RepositoryId)
+                ?? RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
+            var result = await RepositoryCatalogService.DeployWorkflowToRepositoryAsync(
+                request.RepositoryId,
+                editableYaml,
+                request.SelectedTemplate,
+                progress,
+                CancellationToken.None);
+
+            deployStatusIsError = !result.Success || !result.TrackingRecorded;
+            deployStatusMessage = result.Message;
+
+            if (result.Success)
+            {
+                deployedYamlPreview = editableYaml;
+                deployedWorkflowPath = result.WorkflowPath;
+                deployedRepositoryName = selectedRepository.Name;
+                deployedBranch = result.Branch;
+                repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
+                PipelineService.ReloadFromDatabase();
+                Refresh();
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+        catch (Exception ex)
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = $"Deployment failed: {ex.Message}";
+            deployLogs.Add($"[{DateTime.Now:HH:mm:ss}] Deployment failed: {ex.Message}");
+        }
+        finally
+        {
+            deployInProgress = false;
+            StateHasChanged();
+        }
+    }
+
+    private void ApplySuggestedTemplate(string suggestedTemplateId)
+    {
+        if (string.IsNullOrWhiteSpace(suggestedTemplateId) || templates.All(t => !t.Id.Equals(suggestedTemplateId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        request.SelectedTemplate = suggestedTemplateId;
+        UpdateGeneratedPreview();
+        RunYamlDiagnostics();
+    }
+
+    private void ApplyYamlSnippet(string snippet)
+    {
+        if (string.IsNullOrWhiteSpace(snippet))
+        {
+            return;
+        }
+
+        if (snippet.Contains("stage: test", StringComparison.OrdinalIgnoreCase))
+        {
+            editableYaml = EnsureGitLabTestStage(editableYaml);
+        }
+
+        if (!editableYaml.Contains(snippet, StringComparison.Ordinal))
+        {
+            editableYaml = string.IsNullOrWhiteSpace(editableYaml)
+                ? snippet.Trim()
+                : $"{editableYaml.TrimEnd()}\n\n{snippet.Trim()}";
+        }
+
+        RunYamlDiagnostics();
+    }
+
+    private static string EnsureGitLabTestStage(string yaml)
+    {
+        if (string.IsNullOrWhiteSpace(yaml)
+            || !yaml.Contains("stages:", StringComparison.OrdinalIgnoreCase)
+            || yaml.Contains("- test", StringComparison.OrdinalIgnoreCase))
+        {
+            return yaml;
+        }
+
+        var normalized = yaml.Replace("\r\n", "\n", StringComparison.Ordinal);
+        var newline = yaml.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var lines = normalized.Split('\n').ToList();
+        var stagesIndex = lines.FindIndex(line => line.Trim().Equals("stages:", StringComparison.OrdinalIgnoreCase));
+        if (stagesIndex < 0)
+        {
+            return yaml;
+        }
+
+        var insertIndex = stagesIndex + 1;
+        while (insertIndex < lines.Count && (string.IsNullOrWhiteSpace(lines[insertIndex]) || lines[insertIndex].StartsWith("  - ", StringComparison.Ordinal)))
+        {
+            if (lines[insertIndex].Trim().Equals("- publish", StringComparison.OrdinalIgnoreCase)
+                || lines[insertIndex].Trim().Equals("- deploy", StringComparison.OrdinalIgnoreCase))
+            {
+                break;
+            }
+
+            insertIndex++;
+        }
+
+        lines.Insert(insertIndex, "  - test");
+        return string.Join(newline, lines);
+    }
+
+    private void OnPipelineStateChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            Refresh();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        PipelineService.Changed -= OnPipelineStateChanged;
+    }
+
+    private static string GetDiagnosticClass(WorkflowDiagnosticSeverity severity) => severity switch
+    {
+        WorkflowDiagnosticSeverity.Error => "diag-error",
+        WorkflowDiagnosticSeverity.Warning => "diag-warning",
+        _ => "diag-info"
+    };
 
     private static string GetStatusClass(PipelineStatus status) => status switch
     {

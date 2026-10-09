@@ -1,6 +1,7 @@
 @page "/repositories"
 @rendermode InteractiveServer
 @inject RepositoryCatalogService RepositoryCatalogService
+@inject IJSRuntime JS
 
 <PageTitle>Repository Catalog</PageTitle>
 
@@ -9,49 +10,180 @@
 
     <div class="sub-grid">
         <section class="pipeline-form">
-            <h2>Git provider repository analysis</h2>
-            <p class="small-text">The platform inspects GitHub and GitLab repository signatures, selects the appropriate framework, and recommends the deployment path without hardcoding a pipeline for each project.</p>
-            <div class="pipeline-table">
-                @foreach (var repository in repositories)
+            <h2>Add repository source</h2>
+            <div class="pipeline-card" style="margin-bottom: 1rem;">
+                <div class="pipeline-header">
+                    <div>
+                        <h3>Git provider configuration</h3>
+                    </div>
+                </div>
+
+                @if (!string.IsNullOrWhiteSpace(formMessage))
                 {
-                    <article class="pipeline-card">
-                        <div class="pipeline-header">
-                            <div>
-                                <h3>@repository.Name</h3>
-                                <div class="small-text">@repository.Provider · @repository.Owner · @repository.Path</div>
-                            </div>
-                            <button class="btn btn-outline" @onclick="() => AnalyzeRepository(repository.Id)">Analyze</button>
-                        </div>
-
-                        <div class="pipeline-meta">
-                            <span>Default branch: @repository.DefaultBranch</span>
-                            <span>Target: @repository.DeploymentTarget</span>
-                        </div>
-
-                        <div class="inline-status">
-                            <span class="pipeline-status @(GetStatusClass(repository.DetectedType))">@repository.Provider</span>
-                            <span class="small-text">@repository.DetectedType · Confidence @repository.Confidence%</span>
-                        </div>
-
-                        <p class="small-text">@repository.DetectionSummary</p>
-
-                        @if (repository.Fingerprint.Signals.Count > 0)
-                        {
-                            <div style="margin-top: 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 10px; background: rgba(15, 23, 42, 0.35);">
-                                <div class="small-text" style="font-weight: 600; margin-bottom: 0.4rem;">Project fingerprint: @repository.Fingerprint.Summary</div>
-                                <ul style="margin: 0; padding-left: 1.1rem;">
-                                    @foreach (var signal in repository.Fingerprint.Signals)
-                                    {
-                                        <li class="small-text" style="margin-bottom: 0.25rem;">
-                                            <strong>@signal.Name</strong> (@signal.Evidence) — +@signal.Weight
-                                        </li>
-                                    }
-                                </ul>
-                            </div>
-                        }
-                    </article>
+                    <div class="small-text" style="margin-top: 1rem; padding: 0.75rem 1rem; border-radius: 10px; border: 1px solid @(isErrorMessage ? "rgba(248,113,113,0.45)" : "rgba(74,222,128,0.45)"); background: @(isErrorMessage ? "rgba(127,29,29,0.35)" : "rgba(20,83,45,0.35)"); color: @(isErrorMessage ? "#fecaca" : "#dcfce7");">
+                        @formMessage
+                    </div>
                 }
+
+                <div style="display: grid; gap: 0.75rem; margin-top: 1rem;">
+                    <label>
+                        <span class="small-text">Provider</span>
+                        <select @bind="selectedProvider" class="form-control @(providerTouched ? "is-valid" : "")">
+                            <option value="@RepositoryProvider.GitLab">GitLab</option>
+                            <option value="@RepositoryProvider.GitHub">GitHub</option>
+                        </select>
+                    </label>
+                    <label>
+                        <span class="small-text">Repository URL or namespace</span>
+                        <input @bind="repositoryUrl" @bind:event="oninput" class="form-control @GetRepoUrlValidationClass()" placeholder="https://gitlab.com/mcazabonnet" />
+                        @if (!string.IsNullOrWhiteSpace(repositoryUrl) && !IsValidRepoUrl(repositoryUrl))
+                        {
+                            <div class="small-text" style="color: #fca5a5; margin-top: 0.25rem;">Invalid repo URL. Use a full GitLab/GitHub URL or namespace.</div>
+                        }
+                        else if (string.IsNullOrWhiteSpace(repositoryUrl))
+                        {
+                            <div class="small-text" style="color: #fca5a5; margin-top: 0.25rem;">Repository URL is required.</div>
+                        }
+                    </label>
+                    <label>
+                        <span class="small-text">Access token</span>
+                        <input @bind="accessToken" @bind:event="oninput" type="@(showSavedToken ? "text" : "password")" class="form-control @GetTokenValidationClass()" placeholder="glpat-..." />
+                        @if (string.IsNullOrWhiteSpace(accessToken))
+                        {
+                            <div class="small-text" style="color: #fca5a5; margin-top: 0.25rem;">Token required for live repository discovery.</div>
+                        }
+                    </label>
+                    <label style="display:flex; align-items:center; gap:0.5rem;">
+                        <input type="checkbox" @bind="showSavedToken" />
+                        <span class="small-text">Show saved token</span>
+                    </label>
+                    <div style="display:flex; gap:0.75rem; flex-wrap:wrap;">
+                        <button type="button" class="btn btn-primary" @onclick="AddRepository" disabled="@isSubmitting">
+                            @if (isSubmitting)
+                            {
+                                <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="margin-right: 0.5rem; vertical-align: middle;"></span>
+                            }
+                            <span>Add repository</span>
+                        </button>
+                        <button type="button" class="btn btn-outline" @onclick="ClearSavedRepositories" disabled="@isSubmitting">Clear saved repos</button>
+                    </div>
+
+                    @if (addLogs.Count > 0)
+                    {
+                        <div class="analysis-console" role="status" aria-live="polite" style="margin-top: 0.75rem;">
+                            <div class="analysis-console-header">Add repository console</div>
+                            <pre>@string.Join("\n", addLogs)</pre>
+                        </div>
+                    }
+                </div>
             </div>
+
+            <h2>Git provider repository analysis</h2>
+            <p class="small-text">The platform inspects configured GitLab/GitHub repository signatures, selects the appropriate framework, and recommends the deployment path without hardcoding a pipeline for each project.</p>
+
+            @if (repositories.Count == 0)
+            {
+                <div class="pipeline-card">
+                    <p class="small-text">No repositories configured yet. Add a GitLab or GitHub URL and token to begin analysis.</p>
+                </div>
+            }
+            else
+            {
+                <div class="pipeline-table">
+                    @foreach (var source in GetRepositorySources())
+                    {
+                        <article class="pipeline-card">
+                            <div class="pipeline-header">
+                                <div>
+                                    <h3>@source.SourceDisplayName</h3>
+                                    <div class="small-text">@source.Provider · @source.SourceRepositoryUrl</div>
+                                </div>
+                                <div class="repo-card-actions">
+                                    <button class="btn btn-danger repo-action-button" @onclick="() => ConfirmRemoveRepository(source.SourceConfigurationId, source.SourceDisplayName)" disabled="@(analyzingRepositoryId is not null)">Remove from UI</button>
+                                </div>
+                            </div>
+
+                            <div class="small-text" style="margin-bottom:0.65rem;">Projects: @source.Repositories.Count</div>
+
+                            @if (source.Repositories.Count == 0)
+                            {
+                                <p class="small-text">No projects discovered under this source yet.</p>
+                            }
+                            else
+                            {
+                                @foreach (var repository in source.Repositories)
+                                {
+                                    <div class="pipeline-item">
+                                        <div class="pipeline-header">
+                                            <div>
+                                                <strong>@repository.Name</strong>
+                                                <div class="small-text">@repository.Owner · @repository.Path</div>
+                                            </div>
+                                            <div class="repo-card-actions">
+                                                <button class="btn btn-outline repo-action-button" @onclick="() => AnalyzeRepository(repository.Id)" disabled="@(analyzingRepositoryId is not null)">
+                                                    @if (analyzingRepositoryId == repository.Id)
+                                                    {
+                                                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="margin-right: 0.5rem; vertical-align: middle;"></span>
+                                                    }
+                                                    <span>Analyze</span>
+                                                </button>
+                                                @if (analyzingRepositoryId == repository.Id)
+                                                {
+                                                    <button class="btn btn-danger repo-action-button" @onclick="StopAnalysis">Stop</button>
+                                                }
+                                            </div>
+                                        </div>
+
+                                        <div class="pipeline-meta">
+                                            <span>Default branch: @repository.DefaultBranch</span>
+                                            <span>Target: @repository.DeploymentTarget</span>
+                                        </div>
+
+                                        <div class="inline-status">
+                                            <span class="pipeline-status @(GetStatusClass(repository.DetectedType))">@repository.Provider</span>
+                                            @if (!repository.LiveFetchAvailable)
+                                            {
+                                                <span class="fetch-state-badge blocked">offline/blocked</span>
+                                            }
+                                            <span class="small-text">@repository.DetectedType · Confidence @repository.Confidence%</span>
+                                        </div>
+
+                                        @if (!repository.LiveFetchAvailable)
+                                        {
+                                            <p class="small-text fetch-state-text">@repository.LiveFetchStatus</p>
+                                        }
+
+                                        <p class="small-text">@repository.DetectionSummary</p>
+
+                                        @if (analysisLogs.TryGetValue(repository.Id, out var logs) && logs.Count > 0)
+                                        {
+                                            <div class="analysis-console" role="status" aria-live="polite">
+                                                <div class="analysis-console-header">Analysis console</div>
+                                                <pre>@string.Join("\n", logs)</pre>
+                                            </div>
+                                        }
+
+                                        @if (repository.Fingerprint.Signals.Count > 0)
+                                        {
+                                            <div style="margin-top: 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 10px; background: rgba(15, 23, 42, 0.35);">
+                                                <div class="small-text" style="font-weight: 600; margin-bottom: 0.4rem;">Project fingerprint: @repository.Fingerprint.Summary</div>
+                                                <ul style="margin: 0; padding-left: 1.1rem;">
+                                                    @foreach (var signal in repository.Fingerprint.Signals)
+                                                    {
+                                                        <li class="small-text" style="margin-bottom: 0.25rem;">
+                                                            <strong>@signal.Name</strong> (@signal.Evidence) — +@signal.Weight
+                                                        </li>
+                                                    }
+                                                </ul>
+                                            </div>
+                                        }
+                                    </div>
+                                }
+                            }
+                        </article>
+                    }
+                </div>
+            }
         </section>
 
         <aside class="activity-list">
@@ -76,17 +208,348 @@
 
 @code {
     private IReadOnlyList<RepositoryDefinition> repositories = [];
+    private RepositoryProvider selectedProvider = RepositoryProvider.GitLab;
+    private string repositoryUrl = string.Empty;
+    private string accessToken = string.Empty;
+    private bool showSavedToken;
+    private bool isSubmitting;
+    private bool isErrorMessage;
+    private bool providerTouched;
+    private string formMessage = string.Empty;
+    private string? analyzingRepositoryId;
+    private CancellationTokenSource? analysisCancellation;
+    private readonly Dictionary<string, List<string>> analysisLogs = [];
+    private readonly List<string> addLogs = [];
+    private int bannerVersion;
 
     protected override void OnInitialized()
     {
-        repositories = RepositoryCatalogService.GetRepositories();
+        repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
+        repositoryUrl = string.Empty;
+        accessToken = string.Empty;
     }
 
-    private void AnalyzeRepository(string repositoryId)
+    private async Task AddRepository()
     {
-        var selected = RepositoryCatalogService.AnalyzeRepository(repositoryId);
-        repositories = repositories.Select(r => r.Id == repositoryId ? selected : r).ToList();
+        providerTouched = true;
+        addLogs.Clear();
+
+        var capturedRepositoryUrl = repositoryUrl;
+        var capturedAccessToken = accessToken;
+
+        if (string.IsNullOrWhiteSpace(capturedRepositoryUrl))
+        {
+            addLogs.Add($"[{DateTime.Now:HH:mm:ss}] Repository URL is required.");
+            await ShowBannerAsync("Repository URL is required.", true);
+            repositoryUrl = string.Empty;
+            accessToken = string.Empty;
+            return;
+        }
+
+        if (!IsValidRepoUrl(capturedRepositoryUrl))
+        {
+            addLogs.Add($"[{DateTime.Now:HH:mm:ss}] Repository URL failed validation.");
+            await ShowBannerAsync("Invalid repo URL. Use a full GitLab/GitHub URL or namespace.", true);
+            repositoryUrl = string.Empty;
+            accessToken = string.Empty;
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(capturedAccessToken))
+        {
+            addLogs.Add($"[{DateTime.Now:HH:mm:ss}] Access token is required for live discovery.");
+            await ShowBannerAsync("Token required for live repository discovery.", true);
+            repositoryUrl = string.Empty;
+            accessToken = string.Empty;
+            return;
+        }
+
+        isSubmitting = true;
+        formMessage = string.Empty;
+        addLogs.Add($"[{DateTime.Now:HH:mm:ss}] Starting add operation for {selectedProvider} source.");
+        StateHasChanged();
+
+        var progress = new Progress<string>(message =>
+        {
+            addLogs.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            repositories = await RepositoryCatalogService.AddRepositoryWithProgressAsync(
+                selectedProvider,
+                capturedRepositoryUrl,
+                capturedAccessToken,
+                progress,
+                CancellationToken.None);
+
+            var sourceId = BuildSourceConfigurationId(selectedProvider, capturedRepositoryUrl);
+            var hasLiveFetchFailure = repositories.Any(r =>
+                string.Equals(r.SourceConfigurationId, sourceId, StringComparison.OrdinalIgnoreCase)
+                && !r.LiveFetchAvailable);
+
+            if (hasLiveFetchFailure)
+            {
+                await ShowBannerAsync("Repository source added, but live fetch is blocked. Check the add console for exact API error details.", true, 5000);
+            }
+            else
+            {
+                await ShowBannerAsync("Repository added successfully.", false, 3000);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            addLogs.Add($"[{DateTime.Now:HH:mm:ss}] Add operation canceled.");
+            await ShowBannerAsync("Repository add canceled.", true);
+        }
+        catch (Exception)
+        {
+            addLogs.Add($"[{DateTime.Now:HH:mm:ss}] Add operation failed.");
+            await ShowBannerAsync("Failed to add repository. Verify token, namespace, and network access.", true);
+        }
+        finally
+        {
+            repositoryUrl = string.Empty;
+            accessToken = string.Empty;
+            isSubmitting = false;
+            StateHasChanged();
+        }
     }
+
+    private async Task AnalyzeRepository(string repositoryId)
+    {
+        if (analyzingRepositoryId is not null)
+        {
+            return;
+        }
+
+        analyzingRepositoryId = repositoryId;
+        analysisCancellation = new CancellationTokenSource();
+        analysisLogs[repositoryId] =
+        [
+            $"[{DateTime.Now:HH:mm:ss}] Starting analysis for {repositoryId}"
+        ];
+        StateHasChanged();
+
+        var progress = new Progress<string>(message =>
+        {
+            if (!analysisLogs.TryGetValue(repositoryId, out var entries))
+            {
+                entries = [];
+                analysisLogs[repositoryId] = entries;
+            }
+
+            entries.Add($"[{DateTime.Now:HH:mm:ss}] {message}");
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+        try
+        {
+            var selected = await RepositoryCatalogService.AnalyzeRepositoryWithProgressAsync(repositoryId, progress, analysisCancellation.Token);
+            repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
+            analysisLogs[repositoryId].Add($"[{DateTime.Now:HH:mm:ss}] Completed: {selected.DetectedType} ({selected.Confidence}%)");
+        }
+        catch (OperationCanceledException)
+        {
+            if (!analysisLogs.TryGetValue(repositoryId, out var entries))
+            {
+                entries = [];
+                analysisLogs[repositoryId] = entries;
+            }
+
+            entries.Add($"[{DateTime.Now:HH:mm:ss}] Analysis stopped by user.");
+        }
+        finally
+        {
+            analysisCancellation?.Dispose();
+            analysisCancellation = null;
+            analyzingRepositoryId = null;
+            StateHasChanged();
+        }
+    }
+
+    private void StopAnalysis()
+    {
+        analysisCancellation?.Cancel();
+    }
+
+    private async Task ConfirmRemoveRepository(string repositoryId, string repositoryName)
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", $"Remove '{repositoryName}' from the UI catalog? This will not delete any projects from GitLab/GitHub.");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        isSubmitting = true;
+        formMessage = "Removing repository…";
+        isErrorMessage = false;
+        StateHasChanged();
+
+        RepositoryCatalogService.RemoveRepository(repositoryId);
+        repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
+        analysisLogs.Clear();
+        isSubmitting = false;
+        await ShowBannerAsync($"Repository source '{repositoryName}' removed from UI catalog.", false, 3000);
+    }
+
+    private async Task ClearSavedRepositories()
+    {
+        var confirmed = await JS.InvokeAsync<bool>("confirm", "Clear all saved repositories and delete their stored tokens from this device?");
+        if (!confirmed)
+        {
+            return;
+        }
+
+        isSubmitting = true;
+        formMessage = "Clearing saved repositories…";
+        isErrorMessage = false;
+        StateHasChanged();
+
+        RepositoryCatalogService.ClearSavedRepositories();
+        repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
+        analysisLogs.Clear();
+        repositoryUrl = string.Empty;
+        accessToken = string.Empty;
+        isSubmitting = false;
+        await ShowBannerAsync("All saved repositories were cleared.", false, 3000);
+    }
+
+    private async Task ShowBannerAsync(string message, bool isError, int hideAfterMilliseconds = 0)
+    {
+        var version = ++bannerVersion;
+        formMessage = message;
+        isErrorMessage = isError;
+        StateHasChanged();
+
+        if (hideAfterMilliseconds <= 0)
+        {
+            return;
+        }
+
+        await Task.Delay(hideAfterMilliseconds);
+
+        if (version == bannerVersion)
+        {
+            formMessage = string.Empty;
+            isErrorMessage = false;
+            StateHasChanged();
+        }
+    }
+
+    private string GetRepoUrlValidationClass()
+    {
+        if (string.IsNullOrWhiteSpace(repositoryUrl))
+        {
+            return "is-invalid";
+        }
+
+        return IsValidRepoUrl(repositoryUrl) ? "is-valid" : "is-invalid";
+    }
+
+    private string GetTokenValidationClass()
+    {
+        return string.IsNullOrWhiteSpace(accessToken) ? "is-invalid" : "is-valid";
+    }
+
+    private static bool IsValidRepoUrl(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return false;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Contains("/", StringComparison.Ordinal) && !trimmed.Contains("://", StringComparison.Ordinal))
+        {
+            trimmed = $"https://{trimmed.TrimStart('/')}";
+        }
+
+        if (Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return uri.Host.Contains("gitlab.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Contains("github.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Contains("dev.azure.com", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Contains("gitlab", StringComparison.OrdinalIgnoreCase)
+                || uri.Host.Contains("github", StringComparison.OrdinalIgnoreCase);
+        }
+
+        return !trimmed.Contains(' ') && trimmed.Length > 2;
+    }
+
+    private static string BuildSourceConfigurationId(RepositoryProvider provider, string repositoryUrl)
+    {
+        var normalized = NormalizeRepositoryUrl(repositoryUrl);
+        var value = normalized.Replace("https://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("http://", string.Empty, StringComparison.OrdinalIgnoreCase)
+            .Replace("/", "-", StringComparison.Ordinal);
+        return $"{provider.ToString().ToLowerInvariant()}-{value}";
+    }
+
+    private static string NormalizeRepositoryUrl(string repositoryUrl)
+    {
+        if (string.IsNullOrWhiteSpace(repositoryUrl))
+        {
+            return string.Empty;
+        }
+
+        var trimmed = repositoryUrl.Trim().TrimEnd('/');
+        if (trimmed.EndsWith(".git", StringComparison.OrdinalIgnoreCase))
+        {
+            trimmed = trimmed[..^4];
+        }
+
+        if (!trimmed.Contains("://", StringComparison.Ordinal))
+        {
+            trimmed = $"https://{trimmed.TrimStart('/')}";
+        }
+
+        if (!Uri.TryCreate(trimmed, UriKind.Absolute, out var uri))
+        {
+            return string.Empty;
+        }
+
+        var path = uri.AbsolutePath.Trim('/');
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return string.Empty;
+        }
+
+        return $"{uri.Scheme}://{uri.Host}/{path}";
+    }
+
+    private IReadOnlyList<RepositorySourceGroup> GetRepositorySources()
+    {
+        return repositories
+            .GroupBy(r => string.IsNullOrWhiteSpace(r.SourceConfigurationId) ? r.Id : r.SourceConfigurationId)
+            .Select(group =>
+            {
+                var first = group.First();
+                var displayName = !string.IsNullOrWhiteSpace(first.SourceDisplayName)
+                    ? first.SourceDisplayName
+                    : first.Owner;
+                var sourceUrl = !string.IsNullOrWhiteSpace(first.SourceRepositoryUrl)
+                    ? first.SourceRepositoryUrl
+                    : first.Path;
+
+                return new RepositorySourceGroup(
+                    group.Key,
+                    displayName,
+                    first.Provider,
+                    sourceUrl,
+                    group.OrderBy(r => r.Name, StringComparer.OrdinalIgnoreCase).ToList());
+            })
+            .OrderBy(g => g.SourceDisplayName, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private sealed record RepositorySourceGroup(
+        string SourceConfigurationId,
+        string SourceDisplayName,
+        RepositoryProvider Provider,
+        string SourceRepositoryUrl,
+        IReadOnlyList<RepositoryDefinition> Repositories);
 
     private static string GetStatusClass(DetectedProjectType type) => type switch
     {

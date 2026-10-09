@@ -1,5 +1,6 @@
 ﻿@page "/"
 @rendermode InteractiveServer
+@implements IDisposable
 @inject PipelineService PipelineService
 
 <PageTitle>Pipeline Overview</PageTitle>
@@ -12,14 +13,14 @@
             <p>Monitor delivery health, coordinate approvals, and accelerate release quality across every environment.</p>
             <div class="hero-actions">
                 <a class="btn btn-primary" href="/pipelines">View pipelines</a>
-                <button class="btn btn-secondary" @onclick="QueueHighPriorityRun">Queue release</button>
+                <button class="btn btn-secondary" @onclick="QueueHighPriorityRun" disabled="@(pipelines.Count == 0)">Queue release</button>
             </div>
         </div>
 
         <div class="hero-metrics">
             <div class="metric-box">
-                <span class="label">Current release window</span>
-                <span class="value">03:45 PM</span>
+                <span class="label">Configured pipelines</span>
+                <span class="value">@summary.TotalPipelines</span>
             </div>
             <div class="metric-box">
                 <span class="label">Approval queue</span>
@@ -77,6 +78,10 @@
                         <div class="pipeline-meta">
                             <span>Trigger: @pipeline.Trigger</span>
                             <span>Last run: @pipeline.LastRun.ToLocalTime().ToString("g")</span>
+                            @if (!string.IsNullOrWhiteSpace(pipeline.ExternalPipelineUrl))
+                            {
+                                <a href="@pipeline.ExternalPipelineUrl" target="_blank" rel="noreferrer">Open GitLab run</a>
+                            }
                         </div>
 
                         <div class="stage-list">
@@ -92,7 +97,14 @@
 
                         <div class="pipeline-actions">
                             <span class="small-text">Success rate: @pipeline.SuccessRate%</span>
-                            <button class="btn btn-outline" @onclick="() => TogglePipeline(pipeline.Id)">@(pipeline.Status == PipelineStatus.Running ? "Pause" : "Run")</button>
+                            @if (pipeline.Status == PipelineStatus.Running)
+                            {
+                                <button class="btn btn-secondary" @onclick="() => CancelPipeline(pipeline.Id)">Cancel</button>
+                            }
+                            else
+                            {
+                                <button class="btn btn-outline" @onclick="() => StartPipeline(pipeline.Id)">Run</button>
+                            }
                         </div>
                     </div>
                 }
@@ -103,16 +115,23 @@
             <div class="section-header">
                 <h2>Recent activity</h2>
             </div>
-            <ul>
-                @foreach (var activity in activities)
-                {
-                    <li class="@activity.Tone">
-                        <span class="activity-title">@activity.Title</span>
-                        <span class="activity-detail">@activity.Detail</span>
-                        <span class="activity-time">@activity.Timestamp.ToLocalTime().ToString("g")</span>
-                    </li>
-                }
-            </ul>
+            @if (activities.Count == 0)
+            {
+                <p class="small-text">No recent activity yet.</p>
+            }
+            else
+            {
+                <ul>
+                    @foreach (var activity in activities)
+                    {
+                        <li class="@activity.Tone">
+                            <span class="activity-title">@activity.Title</span>
+                            <span class="activity-detail">@activity.Detail</span>
+                            <span class="activity-time">@activity.Timestamp.ToLocalTime().ToString("g")</span>
+                        </li>
+                    }
+                </ul>
+            }
         </aside>
     </section>
 </div>
@@ -124,6 +143,8 @@
 
     protected override void OnInitialized()
     {
+        PipelineService.Changed += OnPipelineStateChanged;
+        PipelineService.ReloadFromDatabase();
         Refresh();
     }
 
@@ -134,20 +155,40 @@
         activities = PipelineService.GetRecentActivity();
     }
 
-    private void TogglePipeline(int pipelineId)
+    private async Task StartPipeline(int pipelineId)
     {
-        PipelineService.TogglePipelineStatus(pipelineId);
+        await PipelineService.StartPipelineRunAsync(pipelineId);
         Refresh();
     }
 
-    private void QueueHighPriorityRun()
+    private async Task CancelPipeline(int pipelineId)
+    {
+        await PipelineService.CancelPipelineRunAsync(pipelineId);
+        Refresh();
+    }
+
+    private async Task QueueHighPriorityRun()
     {
         var next = pipelines.FirstOrDefault();
         if (next is not null)
         {
-            PipelineService.TogglePipelineStatus(next.Id);
+            await PipelineService.StartPipelineRunAsync(next.Id);
             Refresh();
         }
+    }
+
+    private void OnPipelineStateChanged()
+    {
+        _ = InvokeAsync(() =>
+        {
+            Refresh();
+            StateHasChanged();
+        });
+    }
+
+    public void Dispose()
+    {
+        PipelineService.Changed -= OnPipelineStateChanged;
     }
 
     private static string GetStatusClass(PipelineStatus status) => status switch

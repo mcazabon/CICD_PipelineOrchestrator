@@ -35,6 +35,11 @@ public sealed class RepositoryDefinition
     public string DeploymentTarget { get; set; } = "DEV-WEB-01";
     public bool RequirePeerReview { get; set; } = true;
     public bool RequireChangeTicket { get; set; } = true;
+    public bool LiveFetchAvailable { get; set; } = true;
+    public string LiveFetchStatus { get; set; } = "Live fetch available";
+    public string SourceConfigurationId { get; set; } = string.Empty;
+    public string SourceDisplayName { get; set; } = string.Empty;
+    public string SourceRepositoryUrl { get; set; } = string.Empty;
 }
 
 public sealed class ProjectFingerprint

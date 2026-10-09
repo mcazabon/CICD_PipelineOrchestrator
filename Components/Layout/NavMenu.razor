@@ -1,30 +1,28 @@
-﻿<div class="top-row ps-3 navbar navbar-dark">
-    <div class="container-fluid">
-        <a class="navbar-brand" href="">CICD Pipeline Orchestrator</a>
+﻿<div class="sidebar-header">
+    <div class="brand-mark">C</div>
+    <div>
+        <div class="brand-label">CICD</div>
+        <div class="brand-name">Pipeline Orchestrator</div>
     </div>
 </div>
 
-<input type="checkbox" title="Navigation menu" class="navbar-toggler" />
+<nav class="nav-menu">
+    <div class="nav-item">
+        <NavLink class="nav-link" href="/" Match="NavLinkMatch.All">
+            <span aria-hidden="true">Overview</span>
+        </NavLink>
+    </div>
 
-<div class="nav-scrollable" onclick="document.querySelector('.navbar-toggler').click()">
-    <nav class="flex-column">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Overview
-            </NavLink>
-        </div>
+    <div class="nav-item">
+        <NavLink class="nav-link" href="/repositories">
+            <span aria-hidden="true">Repositories</span>
+        </NavLink>
+    </div>
 
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="repositories">
-                <span class="bi bi-git-nav-menu" aria-hidden="true"></span> Repositories
-            </NavLink>
-        </div>
-
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="pipelines">
-                <span class="bi bi-diagram-3-fill-nav-menu" aria-hidden="true"></span> Pipelines
-            </NavLink>
-        </div>
-    </nav>
-</div>
+    <div class="nav-item">
+        <NavLink class="nav-link" href="/pipelines">
+            <span aria-hidden="true">Pipelines</span>
+        </NavLink>
+    </div>
+</nav>
 

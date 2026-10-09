@@ -12,6 +12,264 @@ body {
     box-sizing: border-box;
 }
 
+.page {
+    display: flex;
+    min-height: 100vh;
+    background: linear-gradient(180deg, #0b1020 0%, #101827 100%);
+}
+
+.sidebar {
+    width: 270px;
+    background: rgba(15, 23, 42, 0.82);
+    border-right: 1px solid rgba(148, 163, 184, 0.16);
+    backdrop-filter: blur(10px);
+    position: sticky;
+    top: 0;
+    height: 100vh;
+    padding: 1.25rem 1rem;
+}
+
+.main-panel {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+}
+
+.topbar {
+    height: 76px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 1.5rem;
+    background: rgba(15, 23, 42, 0.52);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.14);
+    backdrop-filter: blur(10px);
+}
+
+.topbar-title {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+}
+
+.dashboard-pill {
+    display: inline-flex;
+    align-items: center;
+    border: 1px solid rgba(96, 165, 250, 0.35);
+    background: rgba(59, 130, 246, 0.12);
+    color: #bfdbfe;
+    border-radius: 999px;
+    padding: 0.35rem 0.7rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.topbar-title h2 {
+    margin: 0;
+    font-size: 1.2rem;
+    font-weight: 700;
+}
+
+.topbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+}
+
+.status-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.35rem 0.65rem;
+    border-radius: 999px;
+    background: rgba(34, 197, 94, 0.12);
+    border: 1px solid rgba(74, 222, 128, 0.35);
+    color: #bbf7d0;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+
+.topbar-link {
+    color: #dfe7ff;
+    text-decoration: none;
+    font-weight: 600;
+}
+
+.metrics-strip {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(180px, 1fr));
+    gap: 1rem;
+    padding: 1.25rem 1.5rem 0;
+}
+
+.metric-card {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 1rem 1.1rem;
+    border-radius: 16px;
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    background: rgba(15, 23, 42, 0.7);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.22);
+}
+
+.metric-icon {
+    width: 2.6rem;
+    height: 2.6rem;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 800;
+    font-size: 0.82rem;
+    color: white;
+}
+
+.repos-card .metric-icon {
+    background: linear-gradient(135deg, #3b82f6, #60a5fa);
+}
+
+.pipelines-card .metric-icon {
+    background: linear-gradient(135deg, #10b981, #34d399);
+}
+
+.approvals-card .metric-icon {
+    background: linear-gradient(135deg, #f59e0b, #fbbf24);
+}
+
+.incidents-card .metric-icon {
+    background: linear-gradient(135deg, #ef4444, #f87171);
+}
+
+.metric-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+}
+
+.metric-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: #8aa1c5;
+}
+
+.metric-card strong {
+    font-size: 1.6rem;
+    line-height: 1.1;
+    color: #eff6ff;
+}
+
+.sidebar-header {
+    display: flex;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.5rem 0.4rem 1rem;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+    margin-bottom: 1rem;
+}
+
+.brand-mark {
+    width: 2.5rem;
+    height: 2.5rem;
+    border-radius: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #3b82f6, #2dd4bf);
+    color: white;
+    font-weight: 800;
+    box-shadow: 0 10px 20px rgba(45, 212, 191, 0.18);
+}
+
+.brand-label {
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    color: #8fb3ff;
+    text-transform: uppercase;
+}
+
+.brand-name {
+    font-weight: 700;
+    color: #edf2ff;
+}
+
+.nav-menu {
+    display: grid;
+    gap: 0.5rem;
+}
+
+.nav-item {
+    margin: 0;
+}
+
+.nav-link {
+    display: flex;
+    align-items: center;
+    padding: 0.8rem 0.9rem;
+    border-radius: 12px;
+    color: #dfe7ff;
+    text-decoration: none;
+    font-weight: 600;
+    background: transparent;
+    border: 1px solid transparent;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.nav-link:hover {
+    background: rgba(59, 130, 246, 0.08);
+    border-color: rgba(96, 165, 250, 0.2);
+    transform: translateX(2px);
+}
+
+.nav-link.active {
+    background: linear-gradient(135deg, rgba(59, 130, 246, 0.18), rgba(45, 212, 191, 0.08));
+    border-color: rgba(96, 165, 250, 0.28);
+    color: white;
+}
+
+.content {
+    padding: 1.5rem;
+}
+
+@media (max-width: 900px) {
+    .page {
+        flex-direction: column;
+    }
+
+    .sidebar {
+        width: 100%;
+        height: auto;
+        position: static;
+        border-right: none;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .nav-menu {
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    }
+
+    .topbar {
+        padding: 0 1rem;
+    }
+
+    .metrics-strip {
+        grid-template-columns: repeat(2, minmax(160px, 1fr));
+        padding-left: 1rem;
+        padding-right: 1rem;
+    }
+}
+
+@media (max-width: 560px) {
+    .metrics-strip {
+        grid-template-columns: 1fr;
+    }
+}
+
 .main-layout {
     min-height: 100vh;
     background: linear-gradient(180deg, #0b1020 0%, #101827 100%);
@@ -68,17 +326,20 @@ body {
 
 .btn-primary,
 .btn-secondary,
-.btn-outline {
+.btn-outline,
+.btn-danger {
     border: none;
     border-radius: 10px;
     padding: 0.75rem 1rem;
     font-weight: 600;
-    transition: transform 0.15s ease;
+    transition: transform 0.15s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+    cursor: pointer;
 }
 
 .btn-primary {
     background: linear-gradient(135deg, #3b82f6, #2563eb);
     color: white;
+    box-shadow: 0 8px 18px rgba(59, 130, 246, 0.25);
 }
 
 .btn-secondary {
@@ -92,10 +353,23 @@ body {
     border: 1px solid rgba(45, 212, 191, 0.3);
 }
 
+.btn-danger {
+    background: rgba(239, 68, 68, 0.14);
+    color: #fecaca;
+    border: 1px solid rgba(248, 113, 113, 0.4);
+}
+
 .btn-primary:hover,
 .btn-secondary:hover,
-.btn-outline:hover {
+.btn-outline:hover,
+.btn-danger:hover {
     transform: translateY(-1px);
+}
+
+.btn:disabled {
+    opacity: 0.65;
+    cursor: not-allowed;
+    transform: none;
 }
 
 .hero-metrics {
@@ -254,6 +528,59 @@ body {
     color: #bfdbfe;
 }
 
+.fetch-state-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.28rem 0.62rem;
+    border-radius: 999px;
+    font-size: 0.72rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.fetch-state-badge.blocked {
+    background: rgba(239, 68, 68, 0.16);
+    color: #fca5a5;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+}
+
+.fetch-state-text {
+    margin-top: 0.45rem;
+    color: #fca5a5;
+}
+
+.analysis-console {
+    margin-top: 0.75rem;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    background: rgba(2, 6, 23, 0.65);
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.analysis-console-header {
+    padding: 0.45rem 0.65rem;
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: #93c5fd;
+    background: rgba(30, 64, 175, 0.25);
+    border-bottom: 1px solid rgba(59, 130, 246, 0.25);
+}
+
+.analysis-console pre {
+    margin: 0;
+    padding: 0.65rem;
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    color: #bfdbfe;
+    font-size: 0.78rem;
+    line-height: 1.4;
+    font-family: Consolas, 'Courier New', monospace;
+}
+
 .stage-list {
     display: grid;
     gap: 0.5rem;
@@ -375,10 +702,71 @@ body {
 
 .pipeline-card {
     padding: 1.25rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .pipeline-card h3 {
     margin: 0 0 0.5rem;
+}
+
+.pipeline-card:hover {
+    border-color: rgba(96, 165, 250, 0.28);
+    box-shadow: 0 15px 30px rgba(15, 23, 42, 0.2);
+}
+
+.repo-card-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    align-items: center;
+}
+
+.repo-action-button {
+    min-width: 110px;
+}
+
+.form-control {
+    width: 100%;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(148, 163, 184, 0.22);
+    border-radius: 10px;
+    color: #edf2ff;
+    padding: 0.75rem 0.8rem;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-control:focus {
+    border-color: rgba(96, 165, 250, 0.8);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.18);
+}
+
+.form-control.is-valid {
+    border-color: rgba(74, 222, 128, 0.75);
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.08);
+}
+
+.form-control.is-invalid {
+    border-color: rgba(248, 113, 113, 0.8);
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.08);
+}
+
+.spinner-border {
+    display: inline-block;
+    width: 0.9rem;
+    height: 0.9rem;
+    vertical-align: text-bottom;
+    border: 0.15em solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    animation: spinner-border 0.75s linear infinite;
+}
+
+@keyframes spinner-border {
+    to {
+        transform: rotate(360deg);
+    }
 }
 
 .inline-status {
@@ -386,6 +774,53 @@ body {
     align-items: center;
     gap: 0.5rem;
     margin-bottom: 1rem;
+}
+
+.yaml-editor {
+    width: 100%;
+    min-height: 320px;
+    background: rgba(2, 6, 23, 0.65);
+    border: 1px solid rgba(148, 163, 184, 0.24);
+    border-radius: 12px;
+    color: #dbeafe;
+    padding: 0.9rem;
+    font-family: Consolas, 'Courier New', monospace;
+    font-size: 0.83rem;
+    line-height: 1.45;
+    resize: vertical;
+}
+
+.yaml-diagnostics {
+    margin-top: 0.9rem;
+    display: grid;
+    gap: 0.55rem;
+}
+
+.yaml-diagnostics h4 {
+    margin: 0;
+    font-size: 0.9rem;
+}
+
+.diag-item {
+    padding: 0.7rem 0.8rem;
+    border-radius: 10px;
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    background: rgba(15, 23, 42, 0.45);
+}
+
+.diag-item.diag-error {
+    border-color: rgba(248, 113, 113, 0.45);
+    background: rgba(127, 29, 29, 0.35);
+}
+
+.diag-item.diag-warning {
+    border-color: rgba(250, 204, 21, 0.4);
+    background: rgba(113, 63, 18, 0.35);
+}
+
+.diag-item.diag-info {
+    border-color: rgba(96, 165, 250, 0.4);
+    background: rgba(30, 64, 175, 0.25);
 }
 
 @media (max-width: 960px) {
@@ -398,8 +833,17 @@ body {
     .pipeline-header,
     .pipeline-actions,
     .section-header,
-    .pipeline-list-header {
+    .pipeline-list-header,
+    .repo-card-actions {
         flex-direction: column;
         align-items: flex-start;
+    }
+
+    .repo-card-actions {
+        width: 100%;
+    }
+
+    .repo-action-button {
+        width: 100%;
     }
 }

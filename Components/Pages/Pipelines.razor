@@ -1,0 +1,174 @@
+@page "/pipelines"
+@rendermode InteractiveServer
+@inject PipelineService PipelineService
+@inject RepositoryCatalogService RepositoryCatalogService
+
+<PageTitle>Pipelines</PageTitle>
+
+<div class="pipeline-shell">
+    <h1>Metadata-driven pipeline generator</h1>
+
+    <div class="sub-grid">
+        <section class="pipeline-form">
+            <h2>Generate workflow preview</h2>
+            <EditForm Model="request" OnValidSubmit="CreatePipeline">
+                <div class="form-row">
+                    <div class="form-field">
+                        <label for="repo">Repository</label>
+                        <InputSelect id="repo" @bind-Value="request.RepositoryId">
+                            @foreach (var repo in repositories)
+                            {
+                                <option value="@repo.Id">@repo.Name</option>
+                            }
+                        </InputSelect>
+                    </div>
+                    <div class="form-field">
+                        <label for="environment">Target environment</label>
+                        <InputSelect id="environment" @bind-Value="request.Environment">
+                            <option value="DEV">DEV</option>
+                            <option value="UAT">UAT</option>
+                            <option value="PROD">PROD</option>
+                        </InputSelect>
+                    </div>
+                </div>
+                <div class="form-row">
+                    <div class="form-field">
+                        <label for="branch">Source branch</label>
+                        <InputText id="branch" @bind-Value="request.SourceBranch" />
+                    </div>
+                    <div class="form-field">
+                        <label for="ticket">Change ticket</label>
+                        <InputText id="ticket" @bind-Value="request.ChangeTicket" />
+                    </div>
+                </div>
+
+                <div class="form-row">
+                    <div class="form-field">
+                        <label for="version">Artifact version</label>
+                        <InputText id="version" @bind-Value="request.ArtifactVersion" />
+                    </div>
+                    <div class="form-field">
+                        <label for="template">Template</label>
+                        <InputSelect id="template" @bind-Value="request.SelectedTemplate">
+                            @foreach (var template in templates)
+                            {
+                                <option value="@template.Id">@template.Name</option>
+                            }
+                        </InputSelect>
+                    </div>
+                </div>
+
+                <button type="submit" class="btn btn-primary">Generate workflow</button>
+            </EditForm>
+        </section>
+
+        <aside class="activity-list">
+            <div class="section-header">
+                <h2>Production controls</h2>
+            </div>
+            <ul>
+                <li class="warning">
+                    <span class="activity-title">Policy enforcement</span>
+                    <span class="activity-detail">Production requires UAT validation, approval, and a valid ticket.</span>
+                    <span class="activity-time">Immutable artifact promotion only</span>
+                </li>
+            </ul>
+        </aside>
+    </div>
+
+    <div class="pipeline-table">
+        <div class="pipeline-card">
+            <h3>Generated YAML preview</h3>
+            <pre class="small-text" style="white-space: pre-wrap; background: rgba(15,23,42,0.5); padding: 1rem; border-radius: 12px; border: 1px solid rgba(148,163,184,0.15);">@generatedYaml</pre>
+        </div>
+
+        @foreach (var pipeline in pipelines)
+        {
+            <article class="pipeline-card">
+                <div class="pipeline-header">
+                    <div class="pipeline-name-group">
+                        <span class="pipeline-dot @(GetStatusClass(pipeline.Status))"></span>
+                        <div>
+                            <h3>@pipeline.Name</h3>
+                            <div class="small-text">@pipeline.Project · @pipeline.Branch</div>
+                        </div>
+                    </div>
+                    <span class="pipeline-status @(GetStatusClass(pipeline.Status))">@pipeline.Status</span>
+                </div>
+
+                <div class="inline-status">
+                    <span class="small-text">Trigger: @pipeline.Trigger</span>
+                    <span class="small-text">·</span>
+                    <span class="small-text">Last run: @pipeline.LastRun.ToLocalTime().ToString("g")</span>
+                </div>
+
+                <div class="stage-list">
+                    @foreach (var stage in pipeline.Stages)
+                    {
+                        <div class="stage-row">
+                            <span>@stage.Name</span>
+                            <div class="progress-bar"><span style="width:@(stage.Progress)%"></span></div>
+                            <strong>@stage.Progress%</strong>
+                        </div>
+                    }
+                </div>
+
+                <div class="pipeline-actions">
+                    <span class="small-text">Success rate: @pipeline.SuccessRate%</span>
+                    <button class="btn btn-outline" @onclick="() => TogglePipeline(pipeline.Id)">@(pipeline.Status == PipelineStatus.Running ? "Pause" : "Run")</button>
+                </div>
+            </article>
+        }
+    </div>
+</div>
+
+@code {
+    private List<PipelineDefinition> pipelines = [];
+    private PipelineSummary summary = new();
+    private ReleaseWorkflowRequest request = new();
+    private IReadOnlyList<RepositoryDefinition> repositories = [];
+    private IReadOnlyList<PipelineTemplateDefinition> templates = [];
+    private string generatedYaml = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        repositories = RepositoryCatalogService.GetRepositories();
+        templates = RepositoryCatalogService.GetTemplateCatalog();
+        request.RepositoryId = repositories.First().Id;
+        request.SelectedTemplate = templates.First().Id;
+        Refresh();
+        generatedYaml = RepositoryCatalogService.GeneratePreview(repositories.First());
+    }
+
+    private void Refresh()
+    {
+        pipelines = PipelineService.GetPipelines().ToList();
+        summary = PipelineService.GetSummary();
+    }
+
+    private void TogglePipeline(int pipelineId)
+    {
+        PipelineService.TogglePipelineStatus(pipelineId);
+        Refresh();
+    }
+
+    private void CreatePipeline()
+    {
+        var repo = RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
+        if (repo is not null)
+        {
+            generatedYaml = RepositoryCatalogService.GeneratePreview(repo);
+        }
+
+        PipelineService.AddPipeline(repo.Name, repo.Owner, repo.DefaultBranch, request.Environment);
+        Refresh();
+    }
+
+    private static string GetStatusClass(PipelineStatus status) => status switch
+    {
+        PipelineStatus.Running => "running",
+        PipelineStatus.Warning => "warning",
+        PipelineStatus.Failed => "warning",
+        _ => string.Empty
+    };
+}

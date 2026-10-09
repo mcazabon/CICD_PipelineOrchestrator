@@ -1,0 +1,99 @@
+@page "/repositories"
+@rendermode InteractiveServer
+@inject RepositoryCatalogService RepositoryCatalogService
+
+<PageTitle>Repository Catalog</PageTitle>
+
+<div class="pipeline-shell">
+    <h1>Repository onboarding</h1>
+
+    <div class="sub-grid">
+        <section class="pipeline-form">
+            <h2>Git provider repository analysis</h2>
+            <p class="small-text">The platform inspects GitHub and GitLab repository signatures, selects the appropriate framework, and recommends the deployment path without hardcoding a pipeline for each project.</p>
+            <div class="pipeline-table">
+                @foreach (var repository in repositories)
+                {
+                    <article class="pipeline-card">
+                        <div class="pipeline-header">
+                            <div>
+                                <h3>@repository.Name</h3>
+                                <div class="small-text">@repository.Provider · @repository.Owner · @repository.Path</div>
+                            </div>
+                            <button class="btn btn-outline" @onclick="() => AnalyzeRepository(repository.Id)">Analyze</button>
+                        </div>
+
+                        <div class="pipeline-meta">
+                            <span>Default branch: @repository.DefaultBranch</span>
+                            <span>Target: @repository.DeploymentTarget</span>
+                        </div>
+
+                        <div class="inline-status">
+                            <span class="pipeline-status @(GetStatusClass(repository.DetectedType))">@repository.Provider</span>
+                            <span class="small-text">@repository.DetectedType · Confidence @repository.Confidence%</span>
+                        </div>
+
+                        <p class="small-text">@repository.DetectionSummary</p>
+
+                        @if (repository.Fingerprint.Signals.Count > 0)
+                        {
+                            <div style="margin-top: 0.75rem; padding: 0.65rem 0.75rem; border: 1px solid rgba(148, 163, 184, 0.25); border-radius: 10px; background: rgba(15, 23, 42, 0.35);">
+                                <div class="small-text" style="font-weight: 600; margin-bottom: 0.4rem;">Project fingerprint: @repository.Fingerprint.Summary</div>
+                                <ul style="margin: 0; padding-left: 1.1rem;">
+                                    @foreach (var signal in repository.Fingerprint.Signals)
+                                    {
+                                        <li class="small-text" style="margin-bottom: 0.25rem;">
+                                            <strong>@signal.Name</strong> (@signal.Evidence) — +@signal.Weight
+                                        </li>
+                                    }
+                                </ul>
+                            </div>
+                        }
+                    </article>
+                }
+            </div>
+        </section>
+
+        <aside class="activity-list">
+            <div class="section-header">
+                <h2>Detection model</h2>
+            </div>
+            <ul>
+                <li class="neutral">
+                    <span class="activity-title">GitLab-first project signature scan</span>
+                    <span class="activity-detail">Analyzes .csproj, package.json, pom.xml, pyproject.toml, SQL project metadata, and GitLab repository metadata.</span>
+                    <span class="activity-time">Requires manual confirmation for ambiguous repos</span>
+                </li>
+                <li class="success">
+                    <span class="activity-title">Confidence scoring</span>
+                    <span class="activity-detail">Returns a weighted detection score before workflow generation.</span>
+                    <span class="activity-time">Queued for governed approval</span>
+                </li>
+            </ul>
+        </aside>
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<RepositoryDefinition> repositories = [];
+
+    protected override void OnInitialized()
+    {
+        repositories = RepositoryCatalogService.GetRepositories();
+    }
+
+    private void AnalyzeRepository(string repositoryId)
+    {
+        var selected = RepositoryCatalogService.AnalyzeRepository(repositoryId);
+        repositories = repositories.Select(r => r.Id == repositoryId ? selected : r).ToList();
+    }
+
+    private static string GetStatusClass(DetectedProjectType type) => type switch
+    {
+        DetectedProjectType.AspNetCoreApi => "running",
+        DetectedProjectType.ReactWeb => "warning",
+        DetectedProjectType.DotNetWorker => "warning",
+        DetectedProjectType.SqlDatabase => "warning",
+        _ => string.Empty
+    };
+}

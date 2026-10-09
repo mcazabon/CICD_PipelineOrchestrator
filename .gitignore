@@ -1,1 +1,9 @@
-.vs/bin/obj/*.user*.suo*.cache*.log.idea/.vscode/
+.vs/
+bin/
+obj/
+*.user
+*.suo
+*.cache
+*.log
+.idea/
+.vscode/

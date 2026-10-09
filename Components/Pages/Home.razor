@@ -1,0 +1,160 @@
+﻿@page "/"
+@rendermode InteractiveServer
+@inject PipelineService PipelineService
+
+<PageTitle>Pipeline Overview</PageTitle>
+
+<div class="dashboard-shell">
+    <section class="hero-panel">
+        <div class="hero-copy">
+            <p class="small-text">CI/CD operations</p>
+            <h1>Pipeline orchestrator</h1>
+            <p>Monitor delivery health, coordinate approvals, and accelerate release quality across every environment.</p>
+            <div class="hero-actions">
+                <a class="btn btn-primary" href="/pipelines">View pipelines</a>
+                <button class="btn btn-secondary" @onclick="QueueHighPriorityRun">Queue release</button>
+            </div>
+        </div>
+
+        <div class="hero-metrics">
+            <div class="metric-box">
+                <span class="label">Current release window</span>
+                <span class="value">03:45 PM</span>
+            </div>
+            <div class="metric-box">
+                <span class="label">Approval queue</span>
+                <span class="value">@summary.ActiveRuns</span>
+            </div>
+        </div>
+    </section>
+
+    <section class="stats-grid">
+        <div class="stat-card">
+            <div class="title">Total pipelines</div>
+            <span class="value">@summary.TotalPipelines</span>
+        </div>
+        <div class="stat-card">
+            <div class="title">Active runs</div>
+            <span class="value">@summary.ActiveRuns</span>
+        </div>
+        <div class="stat-card">
+            <div class="title">Deployments today</div>
+            <span class="value">@summary.DeploymentsToday</span>
+        </div>
+        <div class="stat-card">
+            <div class="title">Success rate</div>
+            <span class="value">@summary.SuccessRate%</span>
+        </div>
+    </section>
+
+    <section class="sub-grid">
+        <div class="pipeline-list">
+            <div class="pipeline-list-header">
+                <h2>Active pipelines</h2>
+                <a href="/pipelines" class="small-text">Open catalog</a>
+            </div>
+
+            @if (pipelines.Count == 0)
+            {
+                <p class="small-text">No pipelines configured yet.</p>
+            }
+            else
+            {
+                @foreach (var pipeline in pipelines)
+                {
+                    <div class="pipeline-item">
+                        <div class="pipeline-header">
+                            <div class="pipeline-name-group">
+                                <span class="pipeline-dot @(GetStatusClass(pipeline.Status))"></span>
+                                <div>
+                                    <strong>@pipeline.Name</strong>
+                                    <div class="small-text">@pipeline.Project · @pipeline.Branch</div>
+                                </div>
+                            </div>
+                            <span class="pipeline-status @(GetStatusClass(pipeline.Status))">@pipeline.Status</span>
+                        </div>
+
+                        <div class="pipeline-meta">
+                            <span>Trigger: @pipeline.Trigger</span>
+                            <span>Last run: @pipeline.LastRun.ToLocalTime().ToString("g")</span>
+                        </div>
+
+                        <div class="stage-list">
+                            @foreach (var stage in pipeline.Stages)
+                            {
+                                <div class="stage-row">
+                                    <span>@stage.Name</span>
+                                    <div class="progress-bar"><span style="width:@(stage.Progress)%"></span></div>
+                                    <strong>@stage.Progress%</strong>
+                                </div>
+                            }
+                        </div>
+
+                        <div class="pipeline-actions">
+                            <span class="small-text">Success rate: @pipeline.SuccessRate%</span>
+                            <button class="btn btn-outline" @onclick="() => TogglePipeline(pipeline.Id)">@(pipeline.Status == PipelineStatus.Running ? "Pause" : "Run")</button>
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+
+        <aside class="activity-list">
+            <div class="section-header">
+                <h2>Recent activity</h2>
+            </div>
+            <ul>
+                @foreach (var activity in activities)
+                {
+                    <li class="@activity.Tone">
+                        <span class="activity-title">@activity.Title</span>
+                        <span class="activity-detail">@activity.Detail</span>
+                        <span class="activity-time">@activity.Timestamp.ToLocalTime().ToString("g")</span>
+                    </li>
+                }
+            </ul>
+        </aside>
+    </section>
+</div>
+
+@code {
+    private IReadOnlyList<PipelineDefinition> pipelines = [];
+    private PipelineSummary summary = new();
+    private IReadOnlyList<PipelineActivity> activities = [];
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+    }
+
+    private void Refresh()
+    {
+        pipelines = PipelineService.GetPipelines();
+        summary = PipelineService.GetSummary();
+        activities = PipelineService.GetRecentActivity();
+    }
+
+    private void TogglePipeline(int pipelineId)
+    {
+        PipelineService.TogglePipelineStatus(pipelineId);
+        Refresh();
+    }
+
+    private void QueueHighPriorityRun()
+    {
+        var next = pipelines.FirstOrDefault();
+        if (next is not null)
+        {
+            PipelineService.TogglePipelineStatus(next.Id);
+            Refresh();
+        }
+    }
+
+    private static string GetStatusClass(PipelineStatus status) => status switch
+    {
+        PipelineStatus.Running => "running",
+        PipelineStatus.Warning => "warning",
+        PipelineStatus.Failed => "warning",
+        _ => string.Empty
+    };
+}

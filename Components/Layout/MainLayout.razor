@@ -1,23 +1,73 @@
 ﻿@inherits LayoutComponentBase
 @implements IDisposable
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Components.Authorization
 @inject CICD_PipelineOrchestrator.Services.PipelineService PipelineService
 @inject CICD_PipelineOrchestrator.Services.RepositoryCatalogService RepositoryCatalogService
 
-<div class="page">
-    <aside class="sidebar">
+<div class="page @(isSidebarOpen ? "sidebar-open" : "sidebar-collapsed")">
+    <aside class="sidebar @(isSidebarOpen ? "is-open" : "is-collapsed")">
         <NavMenu />
     </aside>
 
+    @if (isSidebarOpen)
+    {
+        <button class="sidebar-overlay" type="button" aria-label="Close navigation" @onclick="ToggleSidebar"></button>
+    }
+
     <div class="main-panel">
         <header class="topbar">
-            <div class="topbar-title">
-                <span class="dashboard-pill">Enterprise</span>
-                <h2>CI/CD Operations</h2>
+            <div class="topbar-left">
+                <div class="topbar-title">
+                    <span class="dashboard-pill">Enterprise</span>
+                    <h2>CI/CD Operations</h2>
+                </div>
             </div>
 
             <div class="topbar-actions">
                 <span class="status-chip">Live</span>
                 <a class="topbar-link" href="/repositories">Repositories</a>
+                @if (CurrentUser?.Identity?.IsAuthenticated == true)
+                {
+                    <div class="user-menu">
+                        <input id="user-menu-toggle" class="user-menu-state" type="checkbox" />
+                        <label class="user-menu-toggle" for="user-menu-toggle" aria-label="Open profile menu">
+                            <span class="user-menu-hamburger" aria-hidden="true">☰</span>
+                            <span class="user-avatar">@GetUserInitial(CurrentUser)</span>
+                            <span class="user-meta">
+                                <span class="user-eyebrow">Signed in as</span>
+                                <strong>@GetDisplayName(CurrentUser)</strong>
+                                <span>@GetIdentityName(CurrentUser)</span>
+                            </span>
+                        </label>
+                        <div class="user-menu-panel">
+                            <div class="user-menu-header">
+                                <span class="user-avatar user-avatar-large">@GetUserInitial(CurrentUser)</span>
+                                <div class="user-menu-header-copy">
+                                    <strong>@GetDisplayName(CurrentUser)</strong>
+                                    <span>@GetIdentityName(CurrentUser)</span>
+                                    <span class="user-role-badge">Enterprise operator</span>
+                                </div>
+                            </div>
+                            <div class="user-menu-section-title">Account</div>
+                            <a class="user-menu-link" href="/profile">Profile settings</a>
+                            <div class="user-menu-detail"><strong>Directory:</strong> @GetDomainName(CurrentUser)</div>
+                            <div class="user-menu-detail"><strong>Auth:</strong> Windows AD / Negotiate</div>
+                            <div class="user-menu-detail"><strong>Session user:</strong> @GetIdentityName(CurrentUser)</div>
+                        </div>
+                    </div>
+                }
+                else
+                {
+                    <div class="user-menu guest-user">
+                        <span class="user-avatar">?</span>
+                        <span class="user-meta">
+                            <span class="user-eyebrow">Signed in as</span>
+                            <strong>Guest</strong>
+                            <span>Not authenticated</span>
+                        </span>
+                    </div>
+                }
             </div>
         </header>
 
@@ -68,10 +118,25 @@
 </div>
 
 @code {
+    [CascadingParameter]
+    private Task<AuthenticationState>? AuthenticationStateTask { get; set; }
+
+    private ClaimsPrincipal? CurrentUser { get; set; }
+    private bool isSidebarOpen = true;
+
     protected override void OnInitialized()
     {
         PipelineService.Changed += OnPipelineStateChanged;
         PipelineService.ReloadFromDatabase();
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (AuthenticationStateTask is not null)
+        {
+            var authState = await AuthenticationStateTask;
+            CurrentUser = authState.User;
+        }
     }
 
     private void OnPipelineStateChanged()
@@ -79,9 +144,46 @@
         _ = InvokeAsync(StateHasChanged);
     }
 
+    private void ToggleSidebar()
+    {
+        isSidebarOpen = !isSidebarOpen;
+    }
+
     public void Dispose()
     {
         PipelineService.Changed -= OnPipelineStateChanged;
+    }
+
+    private static string GetIdentityName(ClaimsPrincipal? user)
+    {
+        return user?.Identity?.Name ?? "Unknown user";
+    }
+
+    private static string GetDisplayName(ClaimsPrincipal? user)
+    {
+        return user?.FindFirst("name")?.Value
+            ?? user?.FindFirst(ClaimTypes.GivenName)?.Value
+            ?? user?.Identity?.Name?.Split('\\').LastOrDefault()
+            ?? "Enterprise User";
+    }
+
+    private static string GetUserInitial(ClaimsPrincipal? user)
+    {
+        var displayName = GetDisplayName(user);
+        return string.IsNullOrWhiteSpace(displayName)
+            ? "U"
+            : displayName[..1].ToUpperInvariant();
+    }
+
+    private static string GetDomainName(ClaimsPrincipal? user)
+    {
+        var identityName = user?.Identity?.Name;
+        if (string.IsNullOrWhiteSpace(identityName) || !identityName.Contains('\\'))
+        {
+            return "Enterprise directory";
+        }
+
+        return identityName.Split('\\')[0];
     }
 
     private int RepositoriesCount => RepositoryCatalogService.GetConfiguredRepositoryCount();

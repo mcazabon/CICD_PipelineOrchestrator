@@ -1,0 +1,67 @@
+@page "/profile"
+@attribute [Authorize]
+@using System.Security.Claims
+@using Microsoft.AspNetCore.Authorization
+@using Microsoft.AspNetCore.Components.Authorization
+@inject AuthenticationStateProvider AuthenticationStateProvider
+
+<PageTitle>Profile Settings</PageTitle>
+
+<div class="pipeline-shell">
+    <h1>Profile settings</h1>
+
+    @if (currentUser is null)
+    {
+        <div class="pipeline-card">
+            <p class="small-text">Loading identity details...</p>
+        </div>
+    }
+    else
+    {
+        <div class="pipeline-card">
+            <h3>Current session</h3>
+            <div class="inline-status">
+                <span class="small-text">Display name: @GetDisplayName(currentUser)</span>
+                <span class="small-text">·</span>
+                <span class="small-text">Account: @GetIdentityName(currentUser)</span>
+                <span class="small-text">·</span>
+                <span class="small-text">Authentication: @GetAuthenticationType(currentUser)</span>
+            </div>
+        </div>
+
+        <div class="pipeline-card">
+            <h3>Directory claims</h3>
+            <div class="yaml-diagnostics">
+                @foreach (var claim in currentUser.Claims.OrderBy(c => c.Type).Take(20))
+                {
+                    <div class="diag-item diag-info">
+                        <strong>@claim.Type</strong>
+                        <div class="small-text">@claim.Value</div>
+                    </div>
+                }
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    private ClaimsPrincipal? currentUser;
+
+    protected override async Task OnInitializedAsync()
+    {
+        var authState = await AuthenticationStateProvider.GetAuthenticationStateAsync();
+        currentUser = authState.User;
+    }
+
+    private static string GetIdentityName(ClaimsPrincipal user) => user.Identity?.Name ?? "Unknown user";
+
+    private static string GetDisplayName(ClaimsPrincipal user)
+    {
+        return user.FindFirst("name")?.Value
+            ?? user.FindFirst(ClaimTypes.GivenName)?.Value
+            ?? user.Identity?.Name?.Split('\\').LastOrDefault()
+            ?? "Enterprise User";
+    }
+
+    private static string GetAuthenticationType(ClaimsPrincipal user) => user.Identity?.AuthenticationType ?? "Unknown";
+}

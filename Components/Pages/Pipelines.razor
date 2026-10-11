@@ -86,6 +86,7 @@
             <div class="repo-card-actions" style="margin-top: 0.75rem; justify-content: flex-start;">
                 <button class="btn btn-outline" type="button" @onclick="RunYamlDiagnostics">Test YAML</button>
                 <button class="btn btn-outline" type="button" @onclick="CopyEditorYaml">Copy YAML</button>
+                <button class="btn btn-outline" type="button" @onclick="PasteYamlFromClipboard">Paste YAML</button>
                 <button class="btn btn-secondary" type="button" @onclick="ResetYamlEditor">Reset to generated</button>
                 <button class="btn btn-primary" type="button" @onclick="DeployYamlToRepository" disabled="@(!CanDeployYaml)">
                     @if (deployInProgress)
@@ -314,6 +315,23 @@
     private Task CopyViewedYaml()
     {
         return CopyYamlToClipboard(deployedYamlPreview, "Viewed YAML");
+    }
+
+    private async Task PasteYamlFromClipboard()
+    {
+        var yaml = await JS.InvokeAsync<string>("navigator.clipboard.readText");
+        if (string.IsNullOrWhiteSpace(yaml))
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = "Clipboard is empty.";
+            return;
+        }
+
+        editableYaml = yaml;
+        deployStatusIsError = false;
+        deployStatusMessage = "Clipboard YAML pasted into the editor.";
+        yamlDiagnostics.Clear();
+        diagnosticsExecuted = false;
     }
 
     private async Task CopyYamlToClipboard(string yaml, string sourceLabel)

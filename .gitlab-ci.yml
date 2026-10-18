@@ -1,0 +1,54 @@
+stages:
+  - restore
+  - build
+  - test
+  - publish
+  - deploy
+
+variables:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  BUILD_PATH: "src/CustomerApi/CustomerApi.csproj"
+
+restore:
+  stage: restore
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  script:
+    - dotnet restore
+
+build:
+  stage: build
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  script:
+    - dotnet build --configuration Release --no-restore
+
+unit_test:
+  stage: test
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  script:
+    - dotnet test --configuration Release --no-build --logger "junit;LogFileName=results.xml"
+
+publish:
+  stage: publish
+  image: mcr.microsoft.com/dotnet/sdk:8.0
+  script:
+    - dotnet publish $BUILD_PATH -c Release -o ./publish
+  artifacts:
+    paths:
+      - ./publish
+
+deploy_dev:
+  stage: deploy
+  environment: dev
+  only:
+    - develop
+  script:
+    - echo "Deploying immutable artifact to DEV server"
+    - ./deploy/Deploy-IIS.ps1 -PackagePath ./publish
+
+# Generated for CICD_PipelineOrchestrator
+# Testing by Mauro Cazabonnet
+# Selected template: GitLab .NET API (gitlab-dotnet-api)
+# Source provider: GitLab
+# Detected project: DotNetWorker
+# Deployment target: DEV-WEB-01
+# Promotion path: dev -> dev -> production

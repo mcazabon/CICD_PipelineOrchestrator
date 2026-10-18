@@ -1,6 +1,7 @@
 @page "/repositories"
 @rendermode InteractiveServer
 @inject RepositoryCatalogService RepositoryCatalogService
+@inject PipelineService PipelineService
 @inject IJSRuntime JS
 
 <PageTitle>Repository Catalog</PageTitle>
@@ -348,6 +349,7 @@
         {
             var selected = await RepositoryCatalogService.AnalyzeRepositoryWithProgressAsync(repositoryId, progress, analysisCancellation.Token);
             repositories = RepositoryCatalogService.GetSavedRepositorySnapshot();
+            PipelineService.ReloadFromDatabase();
             analysisLogs[repositoryId].Add($"[{DateTime.Now:HH:mm:ss}] Completed: {selected.DetectedType} ({selected.Confidence}%)");
         }
         catch (OperationCanceledException)

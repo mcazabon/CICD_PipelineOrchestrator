@@ -9,6 +9,7 @@ public sealed class RepositoryCatalogDbContext(DbContextOptions<RepositoryCatalo
     public DbSet<RepositoryProjectEntity> RepositoryProjects => Set<RepositoryProjectEntity>();
     public DbSet<WorkflowDeploymentEntity> WorkflowDeployments => Set<WorkflowDeploymentEntity>();
     public DbSet<WorkflowRunEntity> WorkflowRuns => Set<WorkflowRunEntity>();
+    public DbSet<AgentInvocationEntity> AgentInvocations => Set<AgentInvocationEntity>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -21,6 +22,8 @@ public sealed class RepositoryCatalogDbContext(DbContextOptions<RepositoryCatalo
             entity.Property(x => x.SourceConfigurationId).HasMaxLength(300);
             entity.Property(x => x.RepositoryUrl).HasMaxLength(500);
             entity.Property(x => x.AccessTokenEncrypted).HasMaxLength(4000);
+            entity.Property(x => x.AgentTokenEncrypted).HasMaxLength(4000);
+            entity.Property(x => x.AuthScheme).HasMaxLength(50);
         });
 
         modelBuilder.Entity<RepositoryProjectEntity>(entity =>
@@ -75,6 +78,20 @@ public sealed class RepositoryCatalogDbContext(DbContextOptions<RepositoryCatalo
             entity.HasIndex(x => x.GitLabPipelineId);
             entity.HasIndex(x => x.Status);
             entity.HasIndex(x => x.StartedUtc);
+        });
+
+        modelBuilder.Entity<AgentInvocationEntity>(entity =>
+        {
+            entity.ToTable("AgentInvocations");
+            entity.HasKey(x => x.Id);
+            entity.Property(x => x.SourceConfigurationId).HasMaxLength(300);
+            entity.Property(x => x.ProjectReference).HasMaxLength(500);
+            entity.Property(x => x.InvokedBy).HasMaxLength(250);
+            entity.Property(x => x.WorkflowId).HasMaxLength(200);
+            entity.Property(x => x.Message).HasMaxLength(2000);
+            entity.Property(x => x.AuthScheme).HasMaxLength(50);
+            entity.HasIndex(x => x.InvokedUtc);
+            entity.HasIndex(x => new { x.SourceConfigurationId });
         });
     }
 }

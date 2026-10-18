@@ -14,6 +14,8 @@ public sealed partial class RepositoryCatalogService
     private readonly GitLabRepositoryService? _gitLabRepositoryService;
     private readonly GitHubRepositoryService? _gitHubRepositoryService;
     private readonly IDbContextFactory<RepositoryCatalogDbContext> _dbContextFactory;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly IConfiguration _configuration;
     private readonly List<RepositoryDefinition> _customRepositories = [];
     private readonly List<RepositoryConfiguration> _configurations = [];
     private readonly string _storagePath;
@@ -21,14 +23,81 @@ public sealed partial class RepositoryCatalogService
     public RepositoryCatalogService(
         IDbContextFactory<RepositoryCatalogDbContext> dbContextFactory,
         GitLabRepositoryService? gitLabRepositoryService = null,
-        GitHubRepositoryService? gitHubRepositoryService = null)
+        GitHubRepositoryService? gitHubRepositoryService = null,
+        IHttpClientFactory? httpClientFactory = null,
+        IConfiguration? configuration = null)
     {
         _dbContextFactory = dbContextFactory;
         _gitLabRepositoryService = gitLabRepositoryService;
         _gitHubRepositoryService = gitHubRepositoryService;
+        _httpClientFactory = httpClientFactory ?? throw new ArgumentNullException(nameof(httpClientFactory));
+        _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
         _storagePath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "CICD_PipelineOrchestrator", "repository-config.json");
         DeletePersistedStorageIfPresent();
         LoadFromDatabase();
+    }
+
+    // Async-friendly variant for use from UI
+    public async Task<bool> UpdateAgentCredentialsAsync(string sourceConfigurationId, string agentToken, string authScheme = "Auto")
+    {
+        try
+        {
+            UpdateAgentCredentials(sourceConfigurationId, agentToken, authScheme);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    // Server-side validation of agent token by making a lightweight test call to GitLab Duo API
+    public async Task<bool> TestAgentTokenAsync(string sourceConfigurationId, string agentToken, string authScheme = "Auto")
+    {
+        try
+        {
+            var source = sourceConfigurationId;
+            // Determine provider from stored sources (best-effort)
+            using var db = _dbContextFactory.CreateDbContext();
+            var entity = db.RepositorySources.AsNoTracking().FirstOrDefault(x => x.SourceConfigurationId == sourceConfigurationId);
+            if (entity is null)
+            {
+                return false;
+            }
+
+            // Only validate by calling GitLab Duo 'workflows' list endpoint using a minimal request header.
+            var scheme = string.IsNullOrWhiteSpace(authScheme) ? (entity.AuthScheme ?? "Auto") : authScheme;
+            var client = CreateValidationClient(scheme, agentToken);
+            var request = new HttpRequestMessage(HttpMethod.Get, "api/v4/ai/duo_workflows/workflows?limit=1");
+            var resp = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            return resp.IsSuccessStatusCode || resp.StatusCode == System.Net.HttpStatusCode.Unauthorized || resp.StatusCode == System.Net.HttpStatusCode.Forbidden;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private HttpClient CreateValidationClient(string authScheme, string overrideToken)
+    {
+        var baseUrl = _configuration["GitLab:BaseUrl"] ?? "https://gitlab.com";
+        var client = _httpClientFactory.CreateClient("GitLabAgentValidation");
+        client.BaseAddress = new Uri(baseUrl.TrimEnd('/') + "/");
+        if (!string.IsNullOrWhiteSpace(overrideToken))
+        {
+            if (string.Equals(authScheme, "PrivateToken", StringComparison.OrdinalIgnoreCase))
+            {
+                client.DefaultRequestHeaders.Remove("PRIVATE-TOKEN");
+                client.DefaultRequestHeaders.Add("PRIVATE-TOKEN", overrideToken.Trim());
+            }
+            else
+            {
+                client.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", overrideToken.Trim());
+            }
+        }
+
+        client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
+        return client;
     }
 
     public void AddRepository(RepositoryProvider provider, string repositoryUrl, string accessToken)
@@ -289,6 +358,41 @@ public sealed partial class RepositoryCatalogService
         };
     }
 
+    public (string AgentToken, string AuthScheme)? GetAgentCredentialsForProject(string projectReference)
+    {
+        if (string.IsNullOrWhiteSpace(projectReference))
+        {
+            return null;
+        }
+
+        // find project by path or id
+        var project = _customRepositories.FirstOrDefault(p => string.Equals(p.Path, projectReference, StringComparison.OrdinalIgnoreCase) || string.Equals(p.Id, projectReference, StringComparison.OrdinalIgnoreCase));
+        if (project is null)
+        {
+            // try loading from DB projects
+            using var db = _dbContextFactory.CreateDbContext();
+            var entity = db.RepositoryProjects.AsNoTracking().FirstOrDefault(x => x.Path == projectReference || x.RepositoryId == projectReference);
+            if (entity is null)
+            {
+                return null;
+            }
+
+            var sourceConfigId = entity.SourceConfigurationId;
+            var config = _configurations.FirstOrDefault(x => CreateRepositoryId(x.Provider, x.RepositoryUrl) == sourceConfigId);
+            if (config is null)
+            {
+                return null;
+            }
+
+            return (config.AgentToken ?? string.Empty, config.AuthScheme ?? "Auto");
+        }
+
+        var sourceId = project.SourceConfigurationId;
+        var cfg = _configurations.FirstOrDefault(x => CreateRepositoryId(x.Provider, x.RepositoryUrl) == sourceId);
+        if (cfg is null) return null;
+        return (cfg.AgentToken ?? string.Empty, cfg.AuthScheme ?? "Auto");
+    }
+
     public async Task<RepositoryDefinition> AnalyzeRepositoryWithProgressAsync(string repositoryId, IProgress<string>? progress, CancellationToken cancellationToken)
     {
         progress?.Report("Initializing repository analysis...");
@@ -346,6 +450,12 @@ public sealed partial class RepositoryCatalogService
             PersistRepositoriesForSource(sourceConfigurationId, mapped);
 
             var selected = mapped.FirstOrDefault(r => string.Equals(r.Id, repositoryId, StringComparison.OrdinalIgnoreCase)) ?? mapped.First();
+            var trackedExistingWorkflow = await TrackExistingWorkflowYamlFromAnalysisAsync(selected, config, sourceConfigurationId, progress, cancellationToken);
+            if (trackedExistingWorkflow)
+            {
+                progress?.Report("Existing .gitlab-ci.yml detected and synced to deployment history.");
+            }
+
             progress?.Report($"Analysis complete. Detected {selected.DetectedType} with {selected.Confidence}% confidence.");
             return selected;
         }
@@ -404,6 +514,8 @@ public sealed partial class RepositoryCatalogService
         string repositoryId,
         string yaml,
         string? selectedTemplateId,
+        string? sourceBranch,
+        string? workflowPathOverride,
         IProgress<string>? progress,
         CancellationToken cancellationToken)
     {
@@ -447,14 +559,20 @@ public sealed partial class RepositoryCatalogService
         progress?.Report($"Preparing deployment for {repository.Name}...");
         await Task.Delay(120, cancellationToken);
 
-        var branch = string.IsNullOrWhiteSpace(repository.DefaultBranch) ? "main" : repository.DefaultBranch;
-        var workflowPath = repository.Provider == RepositoryProvider.GitLab
+        var branch = string.IsNullOrWhiteSpace(sourceBranch)
+            ? (string.IsNullOrWhiteSpace(repository.DefaultBranch) ? "main" : repository.DefaultBranch)
+            : sourceBranch.Trim();
+
+        var defaultWorkflowPath = repository.Provider == RepositoryProvider.GitLab
             ? ".gitlab-ci.yml"
             : template.WorkflowFile;
+        var workflowPath = string.IsNullOrWhiteSpace(workflowPathOverride)
+            ? defaultWorkflowPath
+            : workflowPathOverride.Trim();
 
         progress?.Report($"Deploying '{workflowPath}' to branch '{branch}'...");
 
-        (bool Success, string Message) result = repository.Provider switch
+        var (success, message) = repository.Provider switch
         {
             RepositoryProvider.GitLab when _gitLabRepositoryService is not null => await _gitLabRepositoryService.UpsertWorkflowFileAsync(
                 projectReference: !string.IsNullOrWhiteSpace(repository.Path) ? repository.Path : repositoryId,
@@ -462,6 +580,7 @@ public sealed partial class RepositoryCatalogService
                 workflowPath: workflowPath,
                 yaml: yaml,
                 accessToken: config.AccessToken,
+                createFromBranch: string.IsNullOrWhiteSpace(repository.DefaultBranch) ? "main" : repository.DefaultBranch,
                 cancellationToken: cancellationToken),
             RepositoryProvider.GitHub when _gitHubRepositoryService is not null => await _gitHubRepositoryService.UpsertWorkflowFileAsync(
                 repositoryPath: !string.IsNullOrWhiteSpace(repository.Path) ? repository.Path : $"{repository.Owner}/{repository.Name}",
@@ -473,14 +592,14 @@ public sealed partial class RepositoryCatalogService
             _ => (false, "Provider deployment is not configured.")
         };
 
-        if (!result.Success)
+        if (!success)
         {
-            progress?.Report("Deployment failed.");
+            progress?.Report($"Deployment failed: {message}");
             return new WorkflowDeploymentResult
             {
                 Success = false,
                 TrackingRecorded = false,
-                Message = result.Message,
+                Message = message,
                 WorkflowPath = workflowPath,
                 Branch = branch
             };
@@ -510,7 +629,7 @@ public sealed partial class RepositoryCatalogService
             {
                 Success = true,
                 TrackingRecorded = true,
-                Message = result.Message,
+                Message = message,
                 WorkflowPath = workflowPath,
                 Branch = branch,
                 DeployedUtc = deployedUtc
@@ -523,7 +642,7 @@ public sealed partial class RepositoryCatalogService
             {
                 Success = true,
                 TrackingRecorded = false,
-                Message = $"{result.Message} Workflow deployed, but deployment history could not be recorded: {ex.Message}",
+                Message = $"{message} Workflow deployed, but deployment history could not be recorded: {ex.Message}",
                 WorkflowPath = workflowPath,
                 Branch = branch,
                 DeployedUtc = deployedUtc
@@ -531,7 +650,7 @@ public sealed partial class RepositoryCatalogService
         }
     }
 
-    private string ResolveSourceConfigurationId(string repositoryId)
+    public string ResolveSourceConfigurationId(string repositoryId)
     {
         var customRepository = _customRepositories.FirstOrDefault(x => string.Equals(x.Id, repositoryId, StringComparison.OrdinalIgnoreCase));
         if (customRepository is not null && !string.IsNullOrWhiteSpace(customRepository.SourceConfigurationId))
@@ -546,6 +665,32 @@ public sealed partial class RepositoryCatalogService
 
         var bySourceId = _customRepositories.FirstOrDefault(x => string.Equals(x.SourceConfigurationId, repositoryId, StringComparison.OrdinalIgnoreCase));
         return bySourceId?.SourceConfigurationId ?? repositoryId;
+    }
+
+    public IDbContextFactory<RepositoryCatalogDbContext> GetDbContextFactory() => _dbContextFactory;
+
+    public sealed record RepositorySourceSummary(string SourceConfigurationId, string RepositoryUrl, string AuthScheme, DateTime CreatedUtc, DateTime UpdatedUtc);
+
+    public IReadOnlyList<RepositorySourceSummary> GetRepositorySources()
+    {
+        using var db = _dbContextFactory.CreateDbContext();
+        var sources = db.RepositorySources.AsNoTracking()
+            .Select(x => new RepositorySourceSummary(x.SourceConfigurationId, x.RepositoryUrl, x.AuthScheme ?? "Auto", x.CreatedUtc, x.UpdatedUtc))
+            .OrderBy(x => x.RepositoryUrl, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return sources;
+    }
+
+    public sealed record AgentInvocationSummary(int Id, string SourceConfigurationId, string? ProjectReference, string InvokedBy, DateTime InvokedUtc, string? WorkflowId, bool Success, string Message, string AuthScheme);
+
+    public IReadOnlyList<AgentInvocationSummary> GetRecentAgentInvocations(int limit = 50)
+    {
+        using var db = _dbContextFactory.CreateDbContext();
+        return db.AgentInvocations.AsNoTracking()
+            .OrderByDescending(x => x.InvokedUtc)
+            .Take(limit)
+            .Select(x => new AgentInvocationSummary(x.Id, x.SourceConfigurationId, x.ProjectReference, x.InvokedBy, x.InvokedUtc, x.WorkflowId, x.Success, x.Message, x.AuthScheme))
+            .ToList();
     }
 
     private async Task<IReadOnlyList<RepositoryDefinition>> FetchRepositoriesForConfigurationAsync(RepositoryConfiguration config, CancellationToken cancellationToken)
@@ -664,7 +809,9 @@ public sealed partial class RepositoryCatalogService
             {
                 Provider = (RepositoryProvider)source.Provider,
                 RepositoryUrl = source.RepositoryUrl,
-                AccessToken = DecryptToken(source.AccessTokenEncrypted)
+                AccessToken = DecryptToken(source.AccessTokenEncrypted),
+                AgentToken = DecryptToken(source.AgentTokenEncrypted),
+                AuthScheme = string.IsNullOrWhiteSpace(source.AuthScheme) ? "Auto" : source.AuthScheme
             });
         }
 
@@ -688,6 +835,8 @@ public sealed partial class RepositoryCatalogService
                 Provider = (int)config.Provider,
                 RepositoryUrl = config.RepositoryUrl,
                 AccessTokenEncrypted = EncryptToken(config.AccessToken),
+                AgentTokenEncrypted = EncryptToken(config.AgentToken),
+                AuthScheme = config.AuthScheme ?? "Auto",
                 CreatedUtc = DateTime.UtcNow,
                 UpdatedUtc = DateTime.UtcNow
             });
@@ -697,10 +846,56 @@ public sealed partial class RepositoryCatalogService
             existing.Provider = (int)config.Provider;
             existing.RepositoryUrl = config.RepositoryUrl;
             existing.AccessTokenEncrypted = EncryptToken(config.AccessToken);
+            existing.AgentTokenEncrypted = EncryptToken(config.AgentToken);
+            existing.AuthScheme = config.AuthScheme ?? "Auto";
             existing.UpdatedUtc = DateTime.UtcNow;
         }
 
         db.SaveChanges();
+    }
+
+    public void UpdateAgentCredentials(string sourceConfigurationId, string agentToken, string authScheme = "Auto")
+    {
+        using var db = _dbContextFactory.CreateDbContext();
+        var existing = db.RepositorySources.FirstOrDefault(x => x.SourceConfigurationId == sourceConfigurationId);
+        if (existing is null)
+        {
+            return;
+        }
+
+        existing.AgentTokenEncrypted = EncryptToken(agentToken);
+        existing.AuthScheme = string.IsNullOrWhiteSpace(authScheme) ? "Auto" : authScheme;
+        existing.UpdatedUtc = DateTime.UtcNow;
+        db.SaveChanges();
+
+        // Also update runtime snapshot
+        var cfg = _configurations.FirstOrDefault(x => CreateRepositoryId(x.Provider, x.RepositoryUrl) == sourceConfigurationId);
+        if (cfg is not null)
+        {
+            cfg.AgentToken = agentToken;
+            cfg.AuthScheme = authScheme;
+        }
+
+        // Record audit of credential update (attempts to validate are performed separately)
+        try
+        {
+            db.AgentInvocations.Add(new Data.Entities.AgentInvocationEntity
+            {
+                SourceConfigurationId = sourceConfigurationId,
+                ProjectReference = null,
+                InvokedBy = Environment.UserName ?? string.Empty,
+                InvokedUtc = DateTime.UtcNow,
+                WorkflowId = null,
+                Success = true,
+                Message = "Agent credentials updated",
+                AuthScheme = authScheme ?? "Auto"
+            });
+            db.SaveChanges();
+        }
+        catch
+        {
+            // Swallow audit errors to avoid blocking settings save
+        }
     }
 
     private void PersistRepositoriesForSource(string sourceConfigurationId, IEnumerable<RepositoryDefinition> repositories)
@@ -770,6 +965,75 @@ public sealed partial class RepositoryCatalogService
         using var db = _dbContextFactory.CreateDbContext();
         db.WorkflowDeployments.Add(deployment);
         db.SaveChanges();
+    }
+
+    private async Task<bool> TrackExistingWorkflowYamlFromAnalysisAsync(
+        RepositoryDefinition repository,
+        RepositoryConfiguration config,
+        string sourceConfigurationId,
+        IProgress<string>? progress,
+        CancellationToken cancellationToken)
+    {
+        if (_gitLabRepositoryService is null || repository.Provider != RepositoryProvider.GitLab)
+        {
+            return false;
+        }
+
+        var projectReference = string.IsNullOrWhiteSpace(repository.Path)
+            ? repository.Id
+            : repository.Path;
+
+        var (found, yaml, branch, workflowPath, message) = await _gitLabRepositoryService.TryGetWorkflowFileAsync(
+            projectReference,
+            repository.DefaultBranch,
+            ".gitlab-ci.yml",
+            config.AccessToken,
+            cancellationToken);
+
+        if (!found || string.IsNullOrWhiteSpace(yaml))
+        {
+            progress?.Report(message);
+            return false;
+        }
+
+        using var db = _dbContextFactory.CreateDbContext();
+        var existing = db.WorkflowDeployments
+            .FirstOrDefault(x =>
+                x.RepositoryId == repository.Id
+                && x.WorkflowPath == workflowPath
+                && x.Branch == branch);
+
+        if (existing is null)
+        {
+            db.WorkflowDeployments.Add(new WorkflowDeploymentEntity
+            {
+                SourceConfigurationId = sourceConfigurationId,
+                RepositoryId = repository.Id,
+                RepositoryName = repository.Name,
+                ProjectOwner = repository.Owner,
+                Provider = (int)repository.Provider,
+                Branch = branch,
+                WorkflowPath = workflowPath,
+                TemplateId = "detected-existing",
+                YamlContent = yaml,
+                DeployedUtc = DateTime.UtcNow
+            });
+
+            db.SaveChanges();
+            return true;
+        }
+
+        existing.SourceConfigurationId = sourceConfigurationId;
+        existing.RepositoryName = repository.Name;
+        existing.ProjectOwner = repository.Owner;
+        existing.Provider = (int)repository.Provider;
+        existing.Branch = branch;
+        existing.WorkflowPath = workflowPath;
+        existing.TemplateId = string.IsNullOrWhiteSpace(existing.TemplateId) ? "detected-existing" : existing.TemplateId;
+        existing.YamlContent = yaml;
+        existing.DeployedUtc = DateTime.UtcNow;
+        db.SaveChanges();
+        return true;
     }
 
     private static RepositoryProjectEntity MapDefinitionToEntity(RepositoryDefinition definition)
@@ -1009,6 +1273,8 @@ public sealed partial class RepositoryCatalogService
         public RepositoryProvider Provider { get; set; }
         public string RepositoryUrl { get; set; } = string.Empty;
         public string AccessToken { get; set; } = string.Empty;
+        public string AgentToken { get; set; } = string.Empty;
+        public string AuthScheme { get; set; } = "Auto";
     }
 
     public IReadOnlyList<PipelineTemplateDefinition> GetTemplateCatalog()
@@ -1323,8 +1589,7 @@ public sealed partial class RepositoryCatalogService
         return null;
     }
 
-    [GeneratedRegex(@"(?i)(glpat-|ghp_|password\s*:|token\s*:)")]
-    private static partial Regex PotentialSecretRegex();
+    private static Regex PotentialSecretRegex() => new(@"(?i)(glpat-|ghp_|password\s*:|token\s*:)", RegexOptions.Compiled);
 
     private static string GetGitHubTestJobSnippet()
     {
@@ -1389,12 +1654,12 @@ stages:
                 continue;
             }
 
-            if (!char.IsWhiteSpace(line[0]) && !trimmed.StartsWith("-", StringComparison.Ordinal))
+            if (!char.IsWhiteSpace(line[0]) && !trimmed.StartsWith('-'))
             {
                 break;
             }
 
-            if (trimmed.StartsWith("-", StringComparison.Ordinal))
+            if (trimmed.StartsWith('-'))
             {
                 var declaredStage = trimmed[1..].Trim();
                 if (declaredStage.Equals(stageName, StringComparison.OrdinalIgnoreCase))

@@ -2,6 +2,7 @@
 @rendermode InteractiveServer
 @implements IDisposable
 @inject PipelineService PipelineService
+@inject RepositoryCatalogService RepositoryCatalogService
 
 <PageTitle>Pipeline Overview</PageTitle>
 
@@ -45,6 +46,14 @@
         <div class="stat-card">
             <div class="title">Success rate</div>
             <span class="value">@summary.SuccessRate%</span>
+        </div>
+        <div class="stat-card">
+            <div class="title">Repository sources</div>
+            <span class="value">@repositorySourceCount</span>
+        </div>
+        <div class="stat-card">
+            <div class="title">Projects discovered</div>
+            <span class="value">@discoveredProjectCount</span>
         </div>
     </section>
 
@@ -140,6 +149,8 @@
     private IReadOnlyList<PipelineDefinition> pipelines = [];
     private PipelineSummary summary = new();
     private IReadOnlyList<PipelineActivity> activities = [];
+    private int repositorySourceCount;
+    private int discoveredProjectCount;
 
     protected override void OnInitialized()
     {
@@ -153,6 +164,8 @@
         pipelines = PipelineService.GetPipelines();
         summary = PipelineService.GetSummary();
         activities = PipelineService.GetRecentActivity();
+        repositorySourceCount = RepositoryCatalogService.GetConfiguredRepositoryCount();
+        discoveredProjectCount = RepositoryCatalogService.GetRepositories(refreshLive: false).Count;
     }
 
     private async Task StartPipeline(int pipelineId)

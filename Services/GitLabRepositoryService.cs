@@ -139,7 +139,14 @@ public sealed class GitLabRepositoryService
         return projects.FirstOrDefault(p => p.Id == repositoryId || p.Name.Equals(repositoryId, StringComparison.OrdinalIgnoreCase));
     }
 
-    public async Task<(bool Success, string Message)> UpsertWorkflowFileAsync(string projectReference, string branch, string workflowPath, string yaml, string accessToken, CancellationToken cancellationToken = default)
+    public async Task<(bool Success, string Message)> UpsertWorkflowFileAsync(
+        string projectReference,
+        string branch,
+        string workflowPath,
+        string yaml,
+        string accessToken,
+        string? createFromBranch = null,
+        CancellationToken cancellationToken = default)
     {
         var baseUrl = _overrideBaseUrl ?? _configuration["GitLab:BaseUrl"];
         var token = string.IsNullOrWhiteSpace(accessToken) ? (_overrideToken ?? _configuration["GitLab:Token"]) : accessToken.Trim();
@@ -163,11 +170,49 @@ public sealed class GitLabRepositoryService
             return (false, "Workflow file path is missing.");
         }
 
+        var normalizedWorkflowPath = workflowPath.Trim().TrimStart('/').Replace('\\', '/');
+        if (string.IsNullOrWhiteSpace(normalizedWorkflowPath))
+        {
+            return (false, "Workflow file path is invalid.");
+        }
+
         var targetBranch = string.IsNullOrWhiteSpace(branch) ? "main" : branch.Trim();
+        var branchRef = string.IsNullOrWhiteSpace(createFromBranch) ? "main" : createFromBranch.Trim();
         var client = CreateConfiguredClient(baseUrl, token);
 
         var encodedProject = Uri.EscapeDataString(projectReference);
-        var encodedFilePath = Uri.EscapeDataString(workflowPath);
+
+        var branchCheck = await client.GetAsync($"api/v4/projects/{encodedProject}/repository/branches/{Uri.EscapeDataString(targetBranch)}", cancellationToken);
+        if (branchCheck.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            using var createBranchContent = new FormUrlEncodedContent(
+            [
+                new KeyValuePair<string, string>("branch", targetBranch),
+                new KeyValuePair<string, string>("ref", branchRef)
+            ]);
+
+            var createBranchResponse = await client.PostAsync($"api/v4/projects/{encodedProject}/repository/branches", createBranchContent, cancellationToken);
+            if (!createBranchResponse.IsSuccessStatusCode)
+            {
+                var createBranchBody = await createBranchResponse.Content.ReadAsStringAsync(cancellationToken);
+                var branchPreview = string.IsNullOrWhiteSpace(createBranchBody)
+                    ? "no response body"
+                    : createBranchBody.Length > 260 ? createBranchBody[..260] + "..." : createBranchBody;
+
+                return (false, $"GitLab branch creation failed for '{targetBranch}' from '{branchRef}': {(int)createBranchResponse.StatusCode} {createBranchResponse.ReasonPhrase}. {branchPreview}");
+            }
+        }
+        else if (!branchCheck.IsSuccessStatusCode)
+        {
+            var checkBody = await branchCheck.Content.ReadAsStringAsync(cancellationToken);
+            var checkPreview = string.IsNullOrWhiteSpace(checkBody)
+                ? "no response body"
+                : checkBody.Length > 260 ? checkBody[..260] + "..." : checkBody;
+
+            return (false, $"GitLab branch lookup failed for '{targetBranch}': {(int)branchCheck.StatusCode} {branchCheck.ReasonPhrase}. {checkPreview}");
+        }
+
+        var encodedFilePath = Uri.EscapeDataString(normalizedWorkflowPath);
         var fileEndpoint = $"api/v4/projects/{encodedProject}/repository/files/{encodedFilePath}";
 
         var existsResponse = await client.GetAsync($"{fileEndpoint}?ref={Uri.EscapeDataString(targetBranch)}", cancellationToken);
@@ -177,7 +222,7 @@ public sealed class GitLabRepositoryService
         {
             branch = targetBranch,
             content = yaml,
-            commit_message = $"chore(cicd): update {workflowPath}"
+            commit_message = $"chore(cicd): update {normalizedWorkflowPath}"
         });
 
         using var requestContent = new StringContent(payload, Encoding.UTF8, "application/json");
@@ -187,7 +232,7 @@ public sealed class GitLabRepositoryService
 
         if (response.IsSuccessStatusCode)
         {
-            return (true, $"Workflow file '{workflowPath}' committed to branch '{targetBranch}'.");
+            return (true, $"Workflow file '{normalizedWorkflowPath}' committed to branch '{targetBranch}'.");
         }
 
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
@@ -196,6 +241,170 @@ public sealed class GitLabRepositoryService
             : body.Length > 260 ? body[..260] + "..." : body;
 
         return (false, $"GitLab commit failed: {(int)response.StatusCode} {response.ReasonPhrase}. {preview}");
+    }
+    public async Task<(bool Found, string Yaml, string Branch, string WorkflowPath, string Message)> TryGetWorkflowFileAsync(string projectReference, string branch, string workflowPath, string accessToken, CancellationToken cancellationToken = default)
+    {
+        var targetBranch = string.IsNullOrWhiteSpace(branch) ? "main" : branch.Trim();
+        var normalizedPath = string.IsNullOrWhiteSpace(workflowPath) ? ".gitlab-ci.yml" : workflowPath.Trim();
+
+        var client = CreateClientOrThrow(projectReference, accessToken, out var encodedProject, out var validationError);
+        if (client is null)
+        {
+            return (false, string.Empty, targetBranch, normalizedPath, validationError);
+        }
+
+        var encodedPath = Uri.EscapeDataString(normalizedPath);
+
+        // If the requested/target branch is main (the common default), prefer a 'develop' branch
+        // when one exists. If a develop branch contains the workflow file, return it and do
+        // not fall back to main. This ensures deployments that target develop pick up the
+        // workflow there when present.
+        if (string.Equals(targetBranch, "main", StringComparison.OrdinalIgnoreCase))
+        {
+            var developEndpoint = $"api/v4/projects/{encodedProject}/repository/files/{encodedPath}?ref=develop";
+            var developResp = await client.GetAsync(developEndpoint, cancellationToken);
+            if (developResp.IsSuccessStatusCode)
+            {
+                // load and decode content from develop
+                var developPayload = await developResp.Content.ReadAsStringAsync(cancellationToken);
+                var developFile = JsonSerializer.Deserialize<GitLabRepositoryFileResponse>(developPayload, new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true
+                });
+
+                if (developFile is not null && !string.IsNullOrWhiteSpace(developFile.Content))
+                {
+                    try
+                    {
+                        var yaml = string.Equals(developFile.Encoding, "base64", StringComparison.OrdinalIgnoreCase)
+                            ? Encoding.UTF8.GetString(Convert.FromBase64String(developFile.Content.Replace("\n", string.Empty, StringComparison.Ordinal)))
+                            : developFile.Content;
+
+                        return (true, yaml, "develop", normalizedPath, $"Workflow file '{normalizedPath}' loaded from branch 'develop'.");
+                    }
+                    catch
+                    {
+                        return (false, string.Empty, "develop", normalizedPath, $"Workflow file '{normalizedPath}' on branch 'develop' could not be decoded.");
+                    }
+                }
+                // if develop exists but has no content or decoding failed, fall through to main lookup
+            }
+            // if develop returned NotFound or an error we continue to check the targetBranch (main)
+        }
+
+        var endpoint = $"api/v4/projects/{encodedProject}/repository/files/{encodedPath}?ref={Uri.EscapeDataString(targetBranch)}";
+        var response = await client.GetAsync(endpoint, cancellationToken);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return (false, string.Empty, targetBranch, normalizedPath, $"Workflow file '{normalizedPath}' was not found on branch '{targetBranch}'.");
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            return (false, string.Empty, targetBranch, normalizedPath, await BuildFailureMessageAsync("GitLab workflow file lookup failed", response, cancellationToken));
+        }
+
+        var payload = await response.Content.ReadAsStringAsync(cancellationToken);
+        var file = JsonSerializer.Deserialize<GitLabRepositoryFileResponse>(payload, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (file is null || string.IsNullOrWhiteSpace(file.Content))
+        {
+            return (false, string.Empty, targetBranch, normalizedPath, $"Workflow file '{normalizedPath}' was found but contains no content.");
+        }
+
+        try
+        {
+            var yaml = string.Equals(file.Encoding, "base64", StringComparison.OrdinalIgnoreCase)
+                ? Encoding.UTF8.GetString(Convert.FromBase64String(file.Content.Replace("\n", string.Empty, StringComparison.Ordinal)))
+                : file.Content;
+
+            return (true, yaml, targetBranch, normalizedPath, $"Workflow file '{normalizedPath}' loaded from branch '{targetBranch}'.");
+        }
+        catch
+        {
+            return (false, string.Empty, targetBranch, normalizedPath, $"Workflow file '{normalizedPath}' content could not be decoded.");
+        }
+    }
+
+    public async Task<GitLabCiLintResult> ValidateCiYamlAsync(string projectReference, string branch, string yaml, string accessToken, CancellationToken cancellationToken = default)
+    {
+        var targetBranch = string.IsNullOrWhiteSpace(branch) ? "main" : branch.Trim();
+        if (string.IsNullOrWhiteSpace(yaml))
+        {
+            return new GitLabCiLintResult
+            {
+                Success = false,
+                Valid = false,
+                Message = "YAML content is empty."
+            };
+        }
+
+        var client = CreateClientOrThrow(projectReference, accessToken, out var encodedProject, out var validationError);
+        if (client is null)
+        {
+            return new GitLabCiLintResult
+            {
+                Success = false,
+                Valid = false,
+                Message = validationError
+            };
+        }
+
+        var payload = JsonSerializer.Serialize(new
+        {
+            content = yaml,
+            @ref = targetBranch,
+            include_merged_yaml = true,
+            dry_run = true
+        });
+
+        using var requestContent = new StringContent(payload, Encoding.UTF8, "application/json");
+        var response = await client.PostAsync($"api/v4/projects/{encodedProject}/ci/lint", requestContent, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            return new GitLabCiLintResult
+            {
+                Success = false,
+                Valid = false,
+                Message = await BuildFailureMessageAsync("GitLab CI lint failed", response, cancellationToken)
+            };
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var lint = JsonSerializer.Deserialize<GitLabCiLintResponse>(body, new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        });
+
+        if (lint is null)
+        {
+            return new GitLabCiLintResult
+            {
+                Success = false,
+                Valid = false,
+                Message = "GitLab CI lint returned an empty response."
+            };
+        }
+
+        var errors = lint.Errors?.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList() ?? [];
+        var warnings = lint.Warnings?.Where(x => !string.IsNullOrWhiteSpace(x)).Select(x => x.Trim()).ToList() ?? [];
+        var isValid = lint.Valid && errors.Count == 0;
+
+        return new GitLabCiLintResult
+        {
+            Success = true,
+            Valid = isValid,
+            Message = string.IsNullOrWhiteSpace(lint.Status)
+                ? (isValid ? "GitLab CI lint passed." : "GitLab CI lint reported issues.")
+                : $"GitLab CI lint status: {lint.Status}.",
+            Errors = errors,
+            Warnings = warnings,
+            MergedYaml = lint.MergedYaml ?? string.Empty
+        };
     }
 
     public async Task<GitLabPipelineTriggerResult> StartPipelineAsync(string projectReference, string branch, string accessToken, CancellationToken cancellationToken = default)
@@ -792,5 +1001,23 @@ public sealed class GitLabRepositoryService
     {
         public string Path { get; set; } = string.Empty;
         public string Type { get; set; } = string.Empty;
+    }
+
+    private sealed class GitLabRepositoryFileResponse
+    {
+        public string? FilePath { get; set; }
+        public string? Encoding { get; set; }
+        public string? Content { get; set; }
+    }
+
+    private sealed class GitLabCiLintResponse
+    {
+        public string? Status { get; set; }
+        public bool Valid { get; set; }
+        public List<string>? Errors { get; set; }
+        public List<string>? Warnings { get; set; }
+
+        [JsonPropertyName("merged_yaml")]
+        public string? MergedYaml { get; set; }
     }
 }

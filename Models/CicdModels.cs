@@ -78,5 +78,6 @@ public sealed class ReleaseWorkflowRequest
     public bool UatValidated { get; set; } = true;
     public string ChangeTicket { get; set; } = string.Empty;
     public string SourceBranch { get; set; } = "develop";
+    public string WorkflowPath { get; set; } = string.Empty;
     public bool RequirePeerReview { get; set; } = true;
 }

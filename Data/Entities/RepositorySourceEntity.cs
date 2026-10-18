@@ -6,6 +6,8 @@ public sealed class RepositorySourceEntity
     public int Provider { get; set; }
     public string RepositoryUrl { get; set; } = string.Empty;
     public string AccessTokenEncrypted { get; set; } = string.Empty;
+    public string AgentTokenEncrypted { get; set; } = string.Empty;
+    public string AuthScheme { get; set; } = string.Empty;
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
 }

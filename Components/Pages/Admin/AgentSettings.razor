@@ -1,0 +1,185 @@
+@page "/admin/agents"
+@rendermode InteractiveServer
+@inject RepositoryCatalogService RepositoryCatalogService
+@inject IJSRuntime JS
+@using CICD_PipelineOrchestrator.Services
+
+<PageTitle>Agent Settings</PageTitle>
+
+<h1>Agent Settings</h1>
+
+<div class="admin-grid">
+    <section class="card">
+        <h2>Repository sources</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>Source</th>
+                    <th>URL</th>
+                    <th>Auth Scheme</th>
+                    <th>Updated</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var src in sources)
+                {
+                    <tr>
+                        <td>@src.SourceConfigurationId</td>
+                        <td>@src.RepositoryUrl</td>
+                        <td>@src.AuthScheme</td>
+                        <td>@src.UpdatedUtc.ToLocalTime()</td>
+                        <td><button class="btn btn-primary" @onclick="() => EditSource(src.SourceConfigurationId)">Edit</button></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+
+    <section class="card">
+        <h2>Recent agent invocations</h2>
+        <table class="table">
+            <thead>
+                <tr>
+                    <th>When</th>
+                    <th>Source</th>
+                    <th>Project</th>
+                    <th>By</th>
+                    <th>Workflow</th>
+                    <th>Success</th>
+                    <th>Message</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var inv in invocations)
+                {
+                    <tr>
+                        <td>@inv.InvokedUtc.ToLocalTime()</td>
+                        <td>@inv.SourceConfigurationId</td>
+                        <td>@inv.ProjectReference</td>
+                        <td>@inv.InvokedBy</td>
+                        <td>@inv.WorkflowId</td>
+                        <td>@(inv.Success ? "Yes" : "No")</td>
+                        <td>@inv.Message</td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </section>
+</div>
+
+@if (editing)
+{
+    <div class="modal">
+        <div class="modal-content">
+            <h3>Edit Agent Credentials</h3>
+            <label>
+                <span>Agent token</span>
+                <input @bind="editToken" type="password" class="form-control" />
+            </label>
+            <label>
+                <span>Auth scheme</span>
+                <select @bind="editScheme" class="form-control">
+                    <option value="Auto">Auto</option>
+                    <option value="Bearer">Bearer</option>
+                    <option value="PrivateToken">PrivateToken</option>
+                </select>
+            </label>
+            <div style="display:flex; gap:0.5rem; margin-top:0.75rem;">
+                <button class="btn btn-primary" @onclick="SaveCredentials" disabled="@isSaving">
+                    @if (isSaving)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="margin-right:0.5rem"></span>
+                    }
+                    Save
+                </button>
+                <button class="btn btn-outline" @onclick="CancelEdit">Cancel</button>
+                <button class="btn btn-secondary" @onclick="TestToken" disabled="@isTesting">Test token</button>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(testResultMessage))
+            {
+                <div class="small-text" style="margin-top:0.5rem">@testResultMessage</div>
+            }
+        </div>
+    </div>
+}
+
+@code {
+    private List<RepositoryCatalogService.RepositorySourceSummary> sources = new();
+    private List<RepositoryCatalogService.AgentInvocationSummary> invocations = new();
+
+    private bool editing = false;
+    private string editingSourceId = string.Empty;
+    private string editToken = string.Empty;
+    private string editScheme = "Auto";
+    private bool isSaving = false;
+    private bool isTesting = false;
+    private string testResultMessage = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        LoadData();
+    }
+
+    private void LoadData()
+    {
+        sources = RepositoryCatalogService.GetRepositorySources().ToList();
+        invocations = RepositoryCatalogService.GetRecentAgentInvocations(50).ToList();
+    }
+
+    private void EditSource(string sourceConfigurationId)
+    {
+        editing = true;
+        editingSourceId = sourceConfigurationId;
+        var cfg = sources.FirstOrDefault(s => s.SourceConfigurationId == sourceConfigurationId);
+        if (cfg is not null)
+        {
+            editScheme = cfg.AuthScheme;
+            editToken = string.Empty; // do not show saved token
+            testResultMessage = string.Empty;
+        }
+    }
+
+    private void CancelEdit()
+    {
+        editing = false;
+        editingSourceId = string.Empty;
+        editToken = string.Empty;
+    }
+
+    private async Task TestToken()
+    {
+        isTesting = true;
+        testResultMessage = string.Empty;
+        StateHasChanged();
+        try
+        {
+            var result = await RepositoryCatalogService.TestAgentTokenAsync(editingSourceId, editToken, editScheme);
+            testResultMessage = result ? "Token validated successfully." : "Token validation failed.";
+        }
+        catch (Exception ex)
+        {
+            testResultMessage = $"Token test error: {ex.Message}";
+        }
+        finally
+        {
+            isTesting = false;
+            StateHasChanged();
+        }
+    }
+
+    private async Task SaveCredentials()
+    {
+        isSaving = true;
+        try
+        {
+            await RepositoryCatalogService.UpdateAgentCredentialsAsync(editingSourceId, editToken, editScheme);
+            editing = false;
+            LoadData();
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+}

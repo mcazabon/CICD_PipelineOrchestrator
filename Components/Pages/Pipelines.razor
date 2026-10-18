@@ -3,7 +3,9 @@
 @implements IDisposable
 @inject PipelineService PipelineService
 @inject RepositoryCatalogService RepositoryCatalogService
+@inject GitLabRepositoryService GitLabRepositoryService
 @inject IJSRuntime JS
+@using Microsoft.AspNetCore.Components.Web
 
 <PageTitle>Pipelines</PageTitle>
 
@@ -39,16 +41,23 @@
                         <InputText id="branch" @bind-Value="request.SourceBranch" />
                     </div>
                     <div class="form-field">
-                        <label for="ticket">Change ticket</label>
-                        <InputText id="ticket" @bind-Value="request.ChangeTicket" />
+                        <label for="workflow-path">Workflow path (optional)</label>
+                        <InputText id="workflow-path" @bind-Value="request.WorkflowPath" placeholder=".gitlab-ci.yml" />
                     </div>
                 </div>
 
                 <div class="form-row">
                     <div class="form-field">
+                        <label for="ticket">Change ticket</label>
+                        <InputText id="ticket" @bind-Value="request.ChangeTicket" />
+                    </div>
+                    <div class="form-field">
                         <label for="version">Artifact version</label>
                         <InputText id="version" @bind-Value="request.ArtifactVersion" />
                     </div>
+                </div>
+
+                <div class="form-row">
                     <div class="form-field">
                         <label for="template">Template</label>
                         <InputSelect id="template" @bind-Value="request.SelectedTemplate" @bind-Value:after="UpdateGeneratedPreview">
@@ -85,6 +94,13 @@
             <textarea class="yaml-editor" @bind="editableYaml" @bind:event="oninput"></textarea>
             <div class="repo-card-actions" style="margin-top: 0.75rem; justify-content: flex-start;">
                 <button class="btn btn-outline" type="button" @onclick="RunYamlDiagnostics">Test YAML</button>
+                <button class="btn btn-outline" type="button" @onclick="AssistYamlWithGitLabAsync" disabled="@lintInProgress">
+                    @if (lintInProgress)
+                    {
+                        <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="margin-right: 0.5rem; vertical-align: middle;"></span>
+                    }
+                    <span>Assist YAML</span>
+                </button>
                 <button class="btn btn-outline" type="button" @onclick="CopyEditorYaml">Copy YAML</button>
                 <button class="btn btn-outline" type="button" @onclick="PasteYamlFromClipboard">Paste YAML</button>
                 <button class="btn btn-secondary" type="button" @onclick="ResetYamlEditor">Reset to generated</button>
@@ -96,6 +112,23 @@
                     <span>Deploy YAML</span>
                 </button>
             </div>
+
+            @if (showAgentModal)
+            {
+                <div @ref="agentModalRef" tabindex="0" @onkeydown="AgentModalKeyDown" style="position:fixed; inset:0; background:rgba(0,0,0,0.5); display:flex; align-items:center; justify-content:center; z-index:1050;">
+                    <div style="width:90%; max-width:1000px; background:white; border-radius:8px; box-shadow:0 6px 24px rgba(0,0,0,.3); overflow:hidden;">
+                        <div style="display:flex; justify-content:space-between; align-items:center; padding:0.5rem 0.75rem; border-bottom:1px solid #e5e7eb;">
+                            <strong>GitLab Duo Agent</strong>
+                            <div>
+                                <button class="btn btn-sm btn-outline" @onclick="CloseAgentModal">Close</button>
+                            </div>
+                        </div>
+                        <div style="padding:0.75rem;">
+                            <AgentChat ProjectId="@agentProjectId" InitialPrompt="@agentPrompt" AutoStart="true" />
+                        </div>
+                    </div>
+                </div>
+            }
 
             @if (!string.IsNullOrWhiteSpace(deployStatusMessage))
             {
@@ -155,6 +188,100 @@
                     }
                 </div>
             }
+
+            @if (lintResult is not null)
+            {
+                <div class="yaml-diagnostics">
+                    <h4>GitLab CI assistant</h4>
+                    <div class="small-text"><strong>Status:</strong> @(lintResult.Valid ? "Valid" : "Needs attention")</div>
+                    <div class="small-text">@lintResult.Message</div>
+
+                    @if (lintResult.Errors.Count > 0)
+                    {
+                        <div class="small-text" style="margin-top:0.45rem;"><strong>Lint errors</strong></div>
+                        <ul>
+                            @foreach (var err in lintResult.Errors)
+                            {
+                                <li class="small-text">@err</li>
+                            }
+                        </ul>
+                    }
+
+                    @if (lintResult.Warnings.Count > 0)
+                    {
+                        <div class="small-text" style="margin-top:0.45rem;"><strong>Lint warnings</strong></div>
+                        <ul>
+                            @foreach (var warning in lintResult.Warnings)
+                            {
+                                <li class="small-text">@warning</li>
+                            }
+                        </ul>
+                    }
+
+                    @if (assistantSuggestions.Count > 0)
+                    {
+                        <div class="small-text" style="margin-top:0.45rem;"><strong>Suggested fixes</strong></div>
+                        <ul>
+                            @foreach (var suggestion in assistantSuggestions)
+                            {
+                                <li class="small-text">@suggestion</li>
+                            }
+                        </ul>
+                    }
+                </div>
+            }
+
+            <div class="yaml-diagnostics">
+                <h4>Assist YAML chat</h4>
+                <div style="display:grid; gap:0.45rem; max-height:220px; overflow:auto; padding:0.55rem; border:1px solid rgba(148,163,184,0.24); border-radius:10px; background:rgba(2,6,23,0.55);">
+                    @foreach (var message in assistantMessages)
+                    {
+                        <div style="padding:0.45rem 0.55rem; border-radius:8px; background:@(message.Role == "user" ? "rgba(59,130,246,0.22)" : "rgba(15,23,42,0.9)"); border:1px solid rgba(148,163,184,0.2);">
+                            <div class="small-text" style="font-weight:600;">@(message.Role == "user" ? "You" : "Assistant")</div>
+                            <div class="small-text">@message.Content</div>
+                        </div>
+                    }
+                </div>
+
+                <div style="display:flex; gap:0.5rem; margin-top:0.55rem; align-items:center;">
+                    <input class="form-control" @bind="assistantPrompt" @bind:event="oninput" placeholder="Ask for YAML guidance (e.g., add test stage and fix lint errors)" />
+                    <button class="btn btn-outline" type="button" @onclick="AskAssistantAsync" disabled="@assistantBusy">
+                        @if (assistantBusy)
+                        {
+                            <span class="spinner-border spinner-border-sm" role="status" aria-hidden="true" style="margin-right: 0.5rem; vertical-align: middle;"></span>
+                        }
+                        <span>Send</span>
+                    </button>
+                </div>
+
+                @if (suggestionCards.Count > 0)
+                {
+                    <div style="display:grid; gap:0.55rem; margin-top:0.7rem;">
+                        @foreach (var card in suggestionCards)
+                        {
+                            <div style="border:1px solid rgba(148,163,184,0.24); border-radius:10px; padding:0.6rem; background:rgba(15,23,42,0.6);">
+                                <div style="display:flex; justify-content:space-between; gap:0.5rem; align-items:center;">
+                                    <strong>@card.Title</strong>
+                                    <span class="small-text">@card.Category</span>
+                                </div>
+                                <div class="small-text" style="margin-top:0.35rem;">@card.Description</div>
+                                <div class="repo-card-actions" style="margin-top:0.55rem; justify-content:flex-start;">
+                                    <button class="btn btn-outline" type="button" @onclick="() => PreviewSuggestionDiff(card.Id)">Preview diff</button>
+                                    <button class="btn btn-secondary" type="button" @onclick="() => ApplySuggestionCard(card.Id)">Apply</button>
+                                </div>
+                            </div>
+                        }
+                    </div>
+                }
+
+                @if (!string.IsNullOrWhiteSpace(suggestionDiffPreview))
+                {
+                    <div style="margin-top:0.7rem;">
+                        <div class="small-text" style="font-weight:600; margin-bottom:0.35rem;">Proposed diff</div>
+                        <pre class="small-text" style="white-space: pre-wrap; background: rgba(2,6,23,0.65); border: 1px solid rgba(148,163,184,0.24); border-radius: 10px; padding: 0.65rem;">@suggestionDiffPreview</pre>
+                    </div>
+                }
+            </div>
         </div>
 
         @foreach (var pipeline in pipelines)
@@ -236,8 +363,20 @@
     private string deployedWorkflowPath = string.Empty;
     private string deployedRepositoryName = string.Empty;
     private string deployedBranch = string.Empty;
+    private bool lintInProgress;
+    private GitLabCiLintResult? lintResult;
+    private List<string> assistantSuggestions = [];
+    private readonly List<YamlAssistantMessage> assistantMessages = [];
+    private readonly List<YamlSuggestionCard> suggestionCards = [];
+    private string assistantPrompt = string.Empty;
+    private string suggestionDiffPreview = string.Empty;
+    private bool assistantBusy;
+    private bool showAgentModal = false;
+    private string agentPrompt = string.Empty;
+    private string? agentProjectId;
+    private ElementReference agentModalRef;
 
-    protected override void OnInitialized()
+    protected override async Task OnInitializedAsync()
     {
         PipelineService.Changed += OnPipelineStateChanged;
         PipelineService.ReloadFromDatabase();
@@ -246,7 +385,8 @@
         request.RepositoryId = repositories.FirstOrDefault()?.Id ?? string.Empty;
         request.SelectedTemplate = templates.FirstOrDefault()?.Id ?? string.Empty;
         Refresh();
-        UpdateGeneratedPreview();
+        await UpdateGeneratedPreview();
+        SeedAssistantWelcome();
     }
 
     private void Refresh()
@@ -332,6 +472,7 @@
         deployStatusMessage = "Clipboard YAML pasted into the editor.";
         yamlDiagnostics.Clear();
         diagnosticsExecuted = false;
+        ClearAssistantOutput();
     }
 
     private async Task CopyYamlToClipboard(string yaml, string sourceLabel)
@@ -366,16 +507,33 @@
         }
 
         var repo = RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
-        generatedYaml = RepositoryCatalogService.GeneratePreview(repo, request.SelectedTemplate, request.Environment);
-        editableYaml = generatedYaml;
+        var storedYaml = RepositoryCatalogService.GetLatestWorkflowYamlForPipeline(repo.Id, repo.Name, repo.Owner);
+
+        if (storedYaml is not null)
+        {
+            generatedYaml = storedYaml.Value.Yaml;
+            editableYaml = storedYaml.Value.Yaml;
+            deployedYamlPreview = storedYaml.Value.Yaml;
+            deployedWorkflowPath = storedYaml.Value.WorkflowPath;
+            deployedRepositoryName = storedYaml.Value.RepositoryName;
+            deployedBranch = storedYaml.Value.Branch;
+            deployStatusIsError = false;
+            deployStatusMessage = $"Loaded existing YAML for {storedYaml.Value.RepositoryName} from {storedYaml.Value.DeployedUtc.ToLocalTime():g}.";
+        }
+        else
+        {
+            generatedYaml = RepositoryCatalogService.GeneratePreview(repo, request.SelectedTemplate, request.Environment);
+            editableYaml = generatedYaml;
+            deployStatusMessage = string.Empty;
+            deployStatusIsError = false;
+            deployedYamlPreview = string.Empty;
+            deployedWorkflowPath = string.Empty;
+            deployedRepositoryName = string.Empty;
+            deployedBranch = string.Empty;
+        }
+
         diagnosticsExecuted = false;
-        deployStatusMessage = string.Empty;
-        deployStatusIsError = false;
         deployLogs.Clear();
-        deployedYamlPreview = string.Empty;
-        deployedWorkflowPath = string.Empty;
-        deployedRepositoryName = string.Empty;
-        deployedBranch = string.Empty;
         PipelineService.AddPipeline(repo.Id, repo.Name, repo.Owner, repo.DefaultBranch, request.Environment);
         Refresh();
     }
@@ -386,7 +544,7 @@
         && !string.IsNullOrWhiteSpace(request.RepositoryId)
         && yamlDiagnostics.All(i => i.Severity != WorkflowDiagnosticSeverity.Error);
 
-    private void UpdateGeneratedPreview()
+    private async Task UpdateGeneratedPreview()
     {
         if (string.IsNullOrWhiteSpace(request.RepositoryId))
         {
@@ -407,13 +565,62 @@
         var repo = repositories.FirstOrDefault(r => r.Id == request.RepositoryId)
             ?? RepositoryCatalogService.AnalyzeRepository(request.RepositoryId);
 
-        generatedYaml = RepositoryCatalogService.GeneratePreview(repo, request.SelectedTemplate, request.Environment);
-        editableYaml = generatedYaml;
+        var loadedFromMainBranch = false;
+        var runContext = RepositoryCatalogService.GetRunContext(repo.Id);
+        if (runContext is not null && repo.Provider == RepositoryProvider.GitLab)
+        {
+            var workflowFile = await GitLabRepositoryService.TryGetWorkflowFileAsync(
+                runContext.ProjectReference,
+                "main",
+                ".gitlab-ci.yml",
+                runContext.AccessToken,
+                CancellationToken.None);
+
+            if (workflowFile.Found && !string.IsNullOrWhiteSpace(workflowFile.Yaml))
+            {
+                generatedYaml = workflowFile.Yaml;
+                editableYaml = workflowFile.Yaml;
+                deployedYamlPreview = workflowFile.Yaml;
+                deployedWorkflowPath = workflowFile.WorkflowPath;
+                deployedRepositoryName = repo.Name;
+                deployedBranch = workflowFile.Branch;
+                deployStatusIsError = false;
+                deployStatusMessage = $"Loaded .gitlab-ci.yml from main branch for {repo.Name}.";
+                loadedFromMainBranch = true;
+            }
+        }
+
+        if (!loadedFromMainBranch)
+        {
+            var storedYaml = RepositoryCatalogService.GetLatestWorkflowYamlForPipeline(repo.Id, repo.Name, repo.Owner);
+            if (storedYaml is not null)
+            {
+                generatedYaml = storedYaml.Value.Yaml;
+                editableYaml = storedYaml.Value.Yaml;
+                deployedYamlPreview = storedYaml.Value.Yaml;
+                deployedWorkflowPath = storedYaml.Value.WorkflowPath;
+                deployedRepositoryName = storedYaml.Value.RepositoryName;
+                deployedBranch = storedYaml.Value.Branch;
+                deployStatusIsError = false;
+                deployStatusMessage = $"Loaded existing YAML for {storedYaml.Value.RepositoryName} from {storedYaml.Value.DeployedUtc.ToLocalTime():g}.";
+            }
+            else
+            {
+                generatedYaml = RepositoryCatalogService.GeneratePreview(repo, request.SelectedTemplate, request.Environment);
+                editableYaml = generatedYaml;
+                deployStatusMessage = string.Empty;
+                deployStatusIsError = false;
+                deployedYamlPreview = string.Empty;
+                deployedWorkflowPath = string.Empty;
+                deployedRepositoryName = string.Empty;
+                deployedBranch = string.Empty;
+            }
+        }
+
         yamlDiagnostics.Clear();
         diagnosticsExecuted = false;
-        deployStatusMessage = string.Empty;
-        deployStatusIsError = false;
         deployLogs.Clear();
+        ClearAssistantOutput();
     }
 
     private void ResetYamlEditor()
@@ -428,6 +635,7 @@
         deployedWorkflowPath = string.Empty;
         deployedRepositoryName = string.Empty;
         deployedBranch = string.Empty;
+        ClearAssistantOutput();
     }
 
     private void RunYamlDiagnostics()
@@ -456,6 +664,338 @@
         deployStatusMessage = string.Empty;
         deployStatusIsError = false;
     }
+
+    private async Task AssistYamlWithGitLabAsync()
+    {
+        RunYamlDiagnostics();
+        ClearAssistantOutput();
+
+        if (string.IsNullOrWhiteSpace(request.RepositoryId))
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = "Select a repository before requesting YAML assistance.";
+            return;
+        }
+
+        var runContext = RepositoryCatalogService.GetRunContext(request.RepositoryId);
+        if (runContext is null)
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = "Repository runtime context is unavailable. Reconnect the source and verify token access.";
+            AddAssistantMessage("assistant", deployStatusMessage);
+            return;
+        }
+
+        if (runContext.Repository.Provider != RepositoryProvider.GitLab)
+        {
+            deployStatusIsError = true;
+            deployStatusMessage = "GitLab CI assistant is currently available only for GitLab repositories.";
+            AddAssistantMessage("assistant", deployStatusMessage);
+            return;
+        }
+
+        lintInProgress = true;
+        try
+        {
+            var branch = string.IsNullOrWhiteSpace(request.SourceBranch)
+                ? runContext.Repository.DefaultBranch
+                : request.SourceBranch;
+
+            lintResult = await GitLabRepositoryService.ValidateCiYamlAsync(
+                runContext.ProjectReference,
+                branch,
+                editableYaml,
+                runContext.AccessToken,
+                CancellationToken.None);
+
+            assistantSuggestions = BuildAssistantSuggestions(lintResult, yamlDiagnostics);
+            suggestionCards.Clear();
+            suggestionCards.AddRange(BuildSuggestionCards(editableYaml, lintResult, yamlDiagnostics));
+            deployStatusIsError = !lintResult.Success || !lintResult.Valid;
+            deployStatusMessage = lintResult.Message;
+            AddAssistantMessage("assistant", BuildAssistantSummary(lintResult, suggestionCards.Count));
+
+            // Open inline Agent chat modal and auto-start with current YAML
+            agentPrompt = editableYaml;
+            agentProjectId = runContext.ProjectReference;
+            showAgentModal = true;
+            // give the UI a render pass, then focus the modal so keyboard (ESC) works immediately
+            await InvokeAsync(StateHasChanged);
+            try
+            {
+                await agentModalRef.FocusAsync();
+            }
+            catch
+            {
+                // ignore focus failures in non-browser test environments
+            }
+        }
+        finally
+        {
+            lintInProgress = false;
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void CloseAgentModal()
+    {
+        showAgentModal = false;
+        agentPrompt = string.Empty;
+        agentProjectId = null;
+    }
+
+    private void AgentModalKeyDown(KeyboardEventArgs e)
+    {
+        if (e is not null && e.Key == "Escape")
+        {
+            CloseAgentModal();
+        }
+    }
+
+    private async Task AskAssistantAsync()
+    {
+        if (assistantBusy)
+        {
+            return;
+        }
+
+        var prompt = assistantPrompt.Trim();
+        if (string.IsNullOrWhiteSpace(prompt))
+        {
+            return;
+        }
+
+        assistantBusy = true;
+        try
+        {
+            AddAssistantMessage("user", prompt);
+            assistantPrompt = string.Empty;
+
+            if (lintResult is null)
+            {
+                await AssistYamlWithGitLabAsync();
+            }
+
+            var cards = BuildSuggestionCards(editableYaml, lintResult, yamlDiagnostics, prompt);
+            suggestionCards.Clear();
+            suggestionCards.AddRange(cards);
+            AddAssistantMessage("assistant", cards.Count == 0
+                ? "I analyzed the YAML and found no safe automatic patch. Run Assist YAML again after edits."
+                : $"I prepared {cards.Count} suggestion card(s). Preview diff or apply directly.");
+        }
+        finally
+        {
+            assistantBusy = false;
+        }
+    }
+
+    private static List<string> BuildAssistantSuggestions(GitLabCiLintResult lint, IReadOnlyList<WorkflowDiagnosticIssue> diagnostics)
+    {
+        var suggestions = new List<string>();
+
+        suggestions.AddRange(lint.Errors.Select(error => $"Fix GitLab lint error: {error}"));
+        suggestions.AddRange(lint.Warnings.Select(warning => $"Review GitLab lint warning: {warning}"));
+
+        foreach (var issue in diagnostics.Where(issue => issue.Severity != WorkflowDiagnosticSeverity.Info))
+        {
+            var message = string.IsNullOrWhiteSpace(issue.Recommendation)
+                ? issue.Message
+                : $"{issue.Message} — {issue.Recommendation}";
+            suggestions.Add($"Address diagnostic: {message}");
+        }
+
+        return suggestions
+            .Where(text => !string.IsNullOrWhiteSpace(text))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(8)
+            .ToList();
+    }
+
+    private List<YamlSuggestionCard> BuildSuggestionCards(string currentYaml, GitLabCiLintResult? lint, IReadOnlyList<WorkflowDiagnosticIssue> diagnostics, string? prompt = null)
+    {
+        var cards = new List<YamlSuggestionCard>();
+        var normalized = currentYaml.Replace("\r\n", "\n", StringComparison.Ordinal);
+
+        if (string.IsNullOrWhiteSpace(normalized))
+        {
+            cards.Add(new YamlSuggestionCard(
+                Id: "seed-default",
+                Category: "Template",
+                Title: "Seed minimal GitLab pipeline",
+                Description: "Adds minimal stages and a default test job to bootstrap the pipeline.",
+                ProposedYaml: "stages:\n  - build\n  - test\n\ndefault-build:\n  stage: build\n  script:\n    - echo \"build step\"\n\ndefault-test:\n  stage: test\n  script:\n    - echo \"test step\""));
+        }
+
+        if (!normalized.Contains("stages:", StringComparison.OrdinalIgnoreCase))
+        {
+            cards.Add(new YamlSuggestionCard(
+                Id: "add-stages",
+                Category: "Structure",
+                Title: "Add stages section",
+                Description: "Defines build/test/deploy stages expected by common GitLab workflows.",
+                ProposedYaml: $"stages:\n  - build\n  - test\n  - deploy\n\n{normalized.Trim()}"));
+        }
+
+        if (normalized.Contains("stage: test", StringComparison.OrdinalIgnoreCase)
+            && !normalized.Contains("- test", StringComparison.OrdinalIgnoreCase)
+            && normalized.Contains("stages:", StringComparison.OrdinalIgnoreCase))
+        {
+            cards.Add(new YamlSuggestionCard(
+                Id: "insert-test-stage",
+                Category: "Stage",
+                Title: "Declare test stage",
+                Description: "Adds '- test' to the stages list to match test jobs.",
+                ProposedYaml: EnsureGitLabTestStage(normalized)));
+        }
+
+        if (lint is not null && lint.Errors.Any(error => error.Contains("script", StringComparison.OrdinalIgnoreCase)) && !normalized.Contains("script:", StringComparison.OrdinalIgnoreCase))
+        {
+            cards.Add(new YamlSuggestionCard(
+                Id: "add-script",
+                Category: "Job",
+                Title: "Add script block",
+                Description: "Adds a default script block to satisfy GitLab job requirements.",
+                ProposedYaml: $"{normalized.Trim()}\n\ndefault-job:\n  stage: test\n  script:\n    - echo \"update script commands\""));
+        }
+
+        foreach (var diagnostic in diagnostics.Where(d => !string.IsNullOrWhiteSpace(d.SuggestedYamlSnippet)).Take(2))
+        {
+            var snippet = diagnostic.SuggestedYamlSnippet.Trim();
+            if (normalized.Contains(snippet, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            cards.Add(new YamlSuggestionCard(
+                Id: $"diag-{cards.Count + 1}",
+                Category: "Diagnostic",
+                Title: "Apply diagnostic snippet",
+                Description: diagnostic.Message,
+                ProposedYaml: string.IsNullOrWhiteSpace(normalized) ? snippet : $"{normalized.Trim()}\n\n{snippet}"));
+        }
+
+        if (!string.IsNullOrWhiteSpace(prompt) && prompt.Contains("test", StringComparison.OrdinalIgnoreCase) && !normalized.Contains("stage: test", StringComparison.OrdinalIgnoreCase))
+        {
+            cards.Add(new YamlSuggestionCard(
+                Id: "prompt-test-job",
+                Category: "Prompt",
+                Title: "Add test job",
+                Description: "Adds a basic test job based on your prompt.",
+                ProposedYaml: $"{normalized.Trim()}\n\nunit-test:\n  stage: test\n  script:\n    - dotnet test"));
+        }
+
+        return cards
+            .Where(card => !string.Equals(card.ProposedYaml.Trim(), normalized.Trim(), StringComparison.Ordinal))
+            .GroupBy(card => card.Id)
+            .Select(group => group.First())
+            .Take(6)
+            .ToList();
+    }
+
+    private void PreviewSuggestionDiff(string cardId)
+    {
+        var card = suggestionCards.FirstOrDefault(c => c.Id == cardId);
+        if (card is null)
+        {
+            return;
+        }
+
+        suggestionDiffPreview = BuildSimpleDiff(editableYaml, card.ProposedYaml);
+        AddAssistantMessage("assistant", $"Previewing diff for '{card.Title}'.");
+    }
+
+    private void ApplySuggestionCard(string cardId)
+    {
+        var card = suggestionCards.FirstOrDefault(c => c.Id == cardId);
+        if (card is null)
+        {
+            return;
+        }
+
+        editableYaml = card.ProposedYaml;
+        suggestionDiffPreview = BuildSimpleDiff(generatedYaml, editableYaml);
+        deployStatusIsError = false;
+        deployStatusMessage = $"Applied suggestion: {card.Title}";
+        AddAssistantMessage("assistant", $"Applied '{card.Title}'. Re-run Assist YAML to validate.");
+        RunYamlDiagnostics();
+    }
+
+    private static string BuildSimpleDiff(string before, string after)
+    {
+        var beforeLines = before.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var afterLines = after.Replace("\r\n", "\n", StringComparison.Ordinal).Split('\n');
+        var max = Math.Max(beforeLines.Length, afterLines.Length);
+        var diff = new List<string>();
+
+        for (var i = 0; i < max; i++)
+        {
+            var oldLine = i < beforeLines.Length ? beforeLines[i] : string.Empty;
+            var newLine = i < afterLines.Length ? afterLines[i] : string.Empty;
+            if (string.Equals(oldLine, newLine, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            if (!string.IsNullOrEmpty(oldLine))
+            {
+                diff.Add($"- {oldLine}");
+            }
+
+            if (!string.IsNullOrEmpty(newLine))
+            {
+                diff.Add($"+ {newLine}");
+            }
+        }
+
+        return diff.Count == 0 ? "No differences." : string.Join("\n", diff.Take(120));
+    }
+
+    private string BuildAssistantSummary(GitLabCiLintResult lint, int cardCount)
+    {
+        if (!lint.Success)
+        {
+            return $"I could not complete GitLab lint validation: {lint.Message}";
+        }
+
+        var status = lint.Valid ? "Lint passed" : "Lint found issues";
+        return $"{status}. I prepared {cardCount} suggestion card(s) for review.";
+    }
+
+    private void AddAssistantMessage(string role, string content)
+    {
+        if (string.IsNullOrWhiteSpace(content))
+        {
+            return;
+        }
+
+        assistantMessages.Add(new YamlAssistantMessage(role, content.Trim(), DateTime.UtcNow));
+        if (assistantMessages.Count > 24)
+        {
+            assistantMessages.RemoveAt(0);
+        }
+    }
+
+    private void SeedAssistantWelcome()
+    {
+        if (assistantMessages.Count > 0)
+        {
+            return;
+        }
+
+        AddAssistantMessage("assistant", "I can help lint, explain issues, propose YAML patches, and show diffs before you apply changes.");
+    }
+
+    private void ClearAssistantOutput()
+    {
+        lintResult = null;
+        assistantSuggestions.Clear();
+        suggestionCards.Clear();
+        suggestionDiffPreview = string.Empty;
+    }
+
+    private sealed record YamlAssistantMessage(string Role, string Content, DateTime Timestamp);
+
+    private sealed record YamlSuggestionCard(string Id, string Category, string Title, string Description, string ProposedYaml);
 
     private async Task DeployYamlToRepository()
     {
@@ -486,11 +1026,14 @@
                 request.RepositoryId,
                 editableYaml,
                 request.SelectedTemplate,
+                request.SourceBranch,
+                request.WorkflowPath,
                 progress,
                 CancellationToken.None);
 
             deployStatusIsError = !result.Success || !result.TrackingRecorded;
             deployStatusMessage = result.Message;
+            deployLogs.Add($"[{DateTime.Now:HH:mm:ss}] {result.Message}");
 
             if (result.Success)
             {
@@ -517,7 +1060,7 @@
         }
     }
 
-    private void ApplySuggestedTemplate(string suggestedTemplateId)
+    private async Task ApplySuggestedTemplate(string suggestedTemplateId)
     {
         if (string.IsNullOrWhiteSpace(suggestedTemplateId) || templates.All(t => !t.Id.Equals(suggestedTemplateId, StringComparison.OrdinalIgnoreCase)))
         {
@@ -525,7 +1068,7 @@
         }
 
         request.SelectedTemplate = suggestedTemplateId;
-        UpdateGeneratedPreview();
+        await UpdateGeneratedPreview();
         RunYamlDiagnostics();
     }
 

@@ -1,0 +1,253 @@
+@page "/agent-chat"
+@using Microsoft.AspNetCore.SignalR.Client
+@using Microsoft.AspNetCore.Components
+@inject NavigationManager NavigationManager
+
+<div class="agent-chat">
+    <h3>GitLab Duo Agent Chat</h3>
+
+    <div>
+        <label>Project Id (optional)</label>
+        <input @bind="projectId" />
+    </div>
+
+    <div>
+        <label>Prompt</label>
+        <textarea rows="6" @bind="prompt" style="width:100%" @ref="promptRef"></textarea>
+    </div>
+
+    <div style="margin-top:0.5rem;">
+        <button class="btn btn-primary" @onclick="StartAssist" disabled="@(!connected)">Start Assist</button>
+        <button class="btn btn-secondary" @onclick="Clear">Clear</button>
+    </div>
+
+    <div class="trace-output" style="margin-top:1rem; background:#0b1220; color:#e6eef8; padding:0.75rem; border-radius:6px; max-height:320px; overflow:auto;">
+        @foreach (var m in messages)
+        {
+            <div>@m</div>
+        }
+    </div>
+
+    @if (showConfirmation)
+    {
+        <div style="position:fixed; inset:0; background:rgba(0,0,0,0.6); display:flex; align-items:center; justify-content:center; z-index:1060;">
+            <div style="width:80%; max-width:900px; background:white; border-radius:6px; padding:1rem;">
+                <h5>Confirm send YAML to Duo Agent</h5>
+                @if (confirmationHasSecrets)
+                {
+                    <div class="alert alert-warning">Potential secrets were detected and masked. Review before sending.</div>
+                }
+                @if (confirmationWasTrimmed)
+                {
+                    <div class="small-text">The YAML was trimmed from @confirmationOriginalLength characters to @confirmationFinalLength characters to meet size limits.</div>
+                }
+                <div style="margin-top:0.5rem; max-height:320px; overflow:auto; background:#f8fafc; padding:0.5rem; border:1px solid #e5e7eb;">
+                    <pre style="white-space:pre-wrap;">@confirmationPreview</pre>
+                </div>
+                <div style="margin-top:0.75rem; display:flex; gap:0.5rem; justify-content:flex-end;">
+                    <button class="btn btn-outline" @onclick="CancelConfirmation">Cancel</button>
+                    <button class="btn btn-primary" @onclick="ConfirmAndSend">Send to Duo Agent</button>
+                </div>
+            </div>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter]
+    public string? ProjectId { get; set; }
+
+    [Parameter]
+    public string? InitialPrompt { get; set; }
+
+    [Parameter]
+    public bool AutoStart { get; set; }
+
+    private HubConnection? connection;
+    private readonly List<string> messages = new();
+    private bool connected = false;
+    private string prompt = string.Empty;
+    private string? projectId;
+    private ElementReference promptRef;
+
+    // confirmation state
+    private bool showConfirmation = false;
+    private bool confirmationHasSecrets = false;
+    private bool confirmationWasTrimmed = false;
+    private int confirmationOriginalLength = 0;
+    private int confirmationFinalLength = 0;
+    private string confirmationPreview = string.Empty;
+    private const int MaxPromptLength = 16000;
+
+    protected override async Task OnInitializedAsync()
+    {
+        // initialize bound values from parameters
+        projectId = ProjectId ?? projectId;
+        prompt = InitialPrompt ?? prompt;
+
+        connection = new HubConnectionBuilder()
+            .WithUrl(NavigationManager.ToAbsoluteUri("/hub/duoagent"))
+            .WithAutomaticReconnect()
+            .Build();
+
+        connection.On<string>("OnTrace", (line) =>
+        {
+            messages.Add(line);
+            _ = InvokeAsync(StateHasChanged);
+        });
+
+            try
+            {
+                await connection.StartAsync();
+                connected = true;
+
+                // focus textarea for keyboard input
+                try { await promptRef.FocusAsync(); } catch { }
+
+                // Auto-start if requested and a prompt exists
+                if (AutoStart && !string.IsNullOrWhiteSpace(prompt))
+                {
+                    await StartAssist();
+                }
+            }
+            catch
+            {
+                messages.Add("Could not connect to DuoAgentHub.");
+            }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        // If parameters arrive after init and AutoStart is true, ensure we start once connected
+        if (AutoStart && !string.IsNullOrWhiteSpace(InitialPrompt))
+        {
+            prompt = InitialPrompt!;
+            projectId = ProjectId;
+            if (connected)
+            {
+                await StartAssist();
+            }
+        }
+    }
+
+    private async Task StartAssist()
+    {
+        // Prepare prompt: redact and trim if necessary, then show confirmation when appropriate
+        var (preview, hasSecrets, wasTrimmed, originalLen, finalLen) = PreparePromptForSend(prompt ?? string.Empty);
+        confirmationPreview = preview;
+        confirmationHasSecrets = hasSecrets;
+        confirmationWasTrimmed = wasTrimmed;
+        confirmationOriginalLength = originalLen;
+        confirmationFinalLength = finalLen;
+
+        // If no issues detected and small enough, send immediately
+        if (!hasSecrets && !wasTrimmed)
+        {
+            await SendPrompt(prompt ?? string.Empty);
+            return;
+        }
+
+        // Otherwise show confirmation modal
+        showConfirmation = true;
+    }
+
+    private void CancelConfirmation()
+    {
+        showConfirmation = false;
+    }
+
+    private async Task ConfirmAndSend()
+    {
+        showConfirmation = false;
+        // send the redacted/trimmed preview as the prompt
+        await SendPrompt(confirmationPreview);
+    }
+
+    private async Task SendPrompt(string toSend)
+    {
+        if (connection is null || connection.State != HubConnectionState.Connected)
+        {
+            messages.Add("Not connected.");
+            return;
+        }
+
+        var promptToSend = BuildAssistPrompt(toSend ?? string.Empty);
+        messages.Add($"[Local] Sending prompt at {DateTime.Now:HH:mm:ss}...");
+        await connection.InvokeAsync("StartFlow", promptToSend, projectId);
+    }
+
+    private static string BuildAssistPrompt(string yaml)
+    {
+        var trimmed = string.IsNullOrWhiteSpace(yaml) ? string.Empty : yaml.Trim();
+        if (string.IsNullOrWhiteSpace(trimmed))
+        {
+            return "Review this .gitlab-ci.yml and suggest improvements for the current repository pipeline.";
+        }
+
+        return $"Review this .gitlab-ci.yml and suggest improvements for the current repository pipeline.\n\n{trimmed}";
+    }
+
+    private void Clear()
+    {
+        messages.Clear();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (connection is not null)
+        {
+            await connection.DisposeAsync();
+        }
+    }
+
+    private static (string preview, bool hasSecrets, bool wasTrimmed, int originalLen, int finalLen) PreparePromptForSend(string input)
+    {
+        var original = input ?? string.Empty;
+        int originalLen = original.Length;
+
+        // simple secret patterns
+        var patterns = new[]
+        {
+            @"(?im)\b(password|passwd|secret|token|api_key|apikey|private_key)\s*[:=]\s*([^\s\n]+)",
+            @"(?m)[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}\.[A-Za-z0-9_\-]{20,}", // JWT-like
+            @"[A-Za-z0-9+/=]{40,}" // long base64-like
+        };
+
+        var preview = original;
+        bool hasSecrets = false;
+        foreach (var pat in patterns)
+        {
+            try
+            {
+                var regex = new System.Text.RegularExpressions.Regex(pat);
+                if (regex.IsMatch(preview))
+                {
+                    hasSecrets = true;
+                    preview = regex.Replace(preview, m =>
+                    {
+                        if (m.Groups.Count >= 3)
+                        {
+                            return m.Groups[1].Value + ": [REDACTED]";
+                        }
+                        return "[REDACTED]";
+                    });
+                }
+            }
+            catch
+            {
+                // ignore regex failures
+            }
+        }
+
+        bool wasTrimmed = false;
+        int finalLen = preview.Length;
+        if (preview.Length > MaxPromptLength)
+        {
+            preview = preview.Substring(0, MaxPromptLength) + "\n... [TRIMMED]";
+            wasTrimmed = true;
+            finalLen = preview.Length;
+        }
+
+        return (preview, hasSecrets, wasTrimmed, originalLen, finalLen);
+    }
+}

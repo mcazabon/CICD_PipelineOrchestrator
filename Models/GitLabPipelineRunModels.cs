@@ -37,3 +37,13 @@ public sealed class RepositoryRunContext
     public string AccessToken { get; set; } = string.Empty;
     public string ProjectReference { get; set; } = string.Empty;
 }
+
+public sealed class GitLabCiLintResult
+{
+    public bool Success { get; set; }
+    public bool Valid { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public List<string> Errors { get; set; } = [];
+    public List<string> Warnings { get; set; } = [];
+    public string MergedYaml { get; set; } = string.Empty;
+}

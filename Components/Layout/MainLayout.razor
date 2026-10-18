@@ -75,8 +75,15 @@
             <div class="metric-card repos-card">
                 <div class="metric-icon">R</div>
                 <div class="metric-body">
-                    <span class="metric-label">Repos</span>
+                    <span class="metric-label">Sources</span>
                     <strong>@RepositoriesCount</strong>
+                </div>
+            </div>
+
+            <div class="metric-card projects-card">
+                <div class="metric-body">
+                    <span class="metric-label">Projects</span>
+                    <strong>@ProjectsCount</strong>
                 </div>
             </div>
 
@@ -187,7 +194,46 @@
     }
 
     private int RepositoriesCount => RepositoryCatalogService.GetConfiguredRepositoryCount();
-    private int PipelinesCount => PipelineService.GetPipelines().Count;
+    private int ProjectsCount => RepositoryCatalogService.GetRepositories(refreshLive: false).Count;
+    private int PipelinesCount => Math.Max(PipelineService.GetPipelines().Count, GetDetectedProjectPipelineCount());
     private int ApprovalCount => PipelineService.GetPipelines().Count(p => p.Status == CICD_PipelineOrchestrator.Models.PipelineStatus.Warning || p.Status == CICD_PipelineOrchestrator.Models.PipelineStatus.Running);
     private int IncidentCount => PipelineService.GetRecentActivity().Count(a => a.Tone == "danger" || a.Tone == "warning");
+
+    private static int GetDetectedProjectPipelineCount()
+    {
+        var root = Directory.GetCurrentDirectory();
+        var projectFolder = ResolveProjectFolder(root);
+        if (string.IsNullOrWhiteSpace(projectFolder))
+        {
+            return 0;
+        }
+
+        try
+        {
+            return Directory
+                .EnumerateFiles(projectFolder, ".gitlab-ci.yml", SearchOption.AllDirectories)
+                .Select(Path.GetDirectoryName)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Count();
+        }
+        catch
+        {
+            return 0;
+        }
+    }
+
+    private static string ResolveProjectFolder(string root)
+    {
+        foreach (var folderName in new[] { "Projects", "projects", "Project", "project" })
+        {
+            var candidate = Path.Combine(root, folderName);
+            if (Directory.Exists(candidate))
+            {
+                return candidate;
+            }
+        }
+
+        return string.Empty;
+    }
 }

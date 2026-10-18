@@ -289,7 +289,10 @@ public sealed class PipelineService(
         if (changed)
         {
             NotifyStateChanged();
+            return;
         }
+
+        NotifyStateChanged();
     }
 
     private void ApplyDeployment(WorkflowDeploymentEntity deployment)
